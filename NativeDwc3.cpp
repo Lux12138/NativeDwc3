@@ -152,10 +152,13 @@ static bool rpmhWrite(uint32_t addr, uint32_t data)
 
   for (unsigned i = 0; i < 1000000; ++i) {
     if (rscRd(tcs + RSC_TCS_CMD_STATUS) & RPMH_CMD_COMPL) {
+      nabu_log_hex("rpmh:sts=", rscRd(tcs + RSC_TCS_CMD_STATUS));
+      nabu_log_hex("rpmh:resp=", rscRd(tcs + 0x40));
       return true;
     }
     __asm__ volatile("yield" ::: "memory");
   }
+  nabu_log_hex("rpmh:sts-timeout=", rscRd(tcs + RSC_TCS_CMD_STATUS));
   return false;
 }
 
