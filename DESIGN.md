@@ -179,3 +179,32 @@ XNU 当前没有 PMIC（SPMI/RPMh）驱动，所以 Stage 1 之前必须先补�
 3. 然后才轮到 femto PHY 的 init sequence 与 PLL lock。
 
 在那之前，驱动默认 `nabu-usb=0`，不碰硬件。
+
+## 2026-10-24 深夜：core 已通，PHY 仍未响应
+
+在 RPMh 与 BCR 修正之后：
+
+| 读数 | 值 | 含义 |
+|---|---|---|
+| `rpmh:l5v` | `0x80000370` | vdda-pll = 880 mV（回读确认） |
+| `rpmh:l2v` | `0x80000c00` | vdda33 = 3072 mV |
+| `rpmh:l12v` | `0x80000708` | vdda18 = 1800 mV |
+| `rpmh:xov` | `3` | xo.lvl 已使能（PHY ref clock） |
+| `dwc3:cap` | `0x01100020` | XHCI 1.1，core 已上电 |
+| `dwc3:gsbus` | `0x2222000e` | GSBUSCFG0 正常 |
+| `dwc3:guid` | `0x17013c42` | GUID 正常 |
+| `dwc3:params0` | `0x4020400a` | GHWPARAMS0 正常 |
+| `dwc3:sid` | `0x33313130` | **DWC_usb31（DWC31_IP = 0x3331）**，不是 0x5533 |
+| `dwc3:dsts` | `0x20004` | device mode 已运行 |
+| `phy:r0/r4/0x1a0/0x94` | `0` | PHY 数字接口无响应 |
+| `phy:common2(0x5c)` | `0xc1c1c1c1` | 总线返回的垃圾模式 |
+
+两个决定性修正：
+
+1. **BCR 必须显式写 0 释放**。qcom reset 没有自清：写 1 只 assert，读回一直是 1，PHY 和 core
+   因此全程处于复位。改成 assert → 延时 → 0 之后，core 立刻返回 XHCI 头和全部全局寄存器。
+2. **GSNPSID 家族要包含 0x3331**。Linux `dwc3/core.h` 的 `DWC31_IP = 0x3331`，
+   本板读出 `0x33313130`，此前按 0x5533/0x5534 判断所以误判为“无 ID”。
+
+仍然阻塞的点：PHY 数字接口读 0。三路模拟电源与 XO 已回读确认到位，所以下一步是
+PHY 的 AHB 访问条件（`usb_phy_cfg_ahb2phy` 的时钟/复位），而不是供电。
