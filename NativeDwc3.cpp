@@ -600,7 +600,15 @@ static int dwc3Bringup(void)
   // Force a connect edge: stop, wait, then start with the event mask already open.
   wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
   for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  wr(DWC3_DCTL, rd(DWC3_DCTL) & ~DWC3_DCTL_RUN_STOP);
+  nabu_log_hex("dwc3:osts=", rd(DWC3_OSTS));
+  {
+    // KEEP_CONNECT holds the D+ pull-up without VBUS detection; this board
+    // detects VBUS through PMIC/extcon, which XNU has no driver for.
+    uint32_t dctl = rd(DWC3_DCTL) & ~DWC3_DCTL_RUN_STOP;
+    dctl |= DWC3_DCTL_KEEP_CONNECT;
+    wr(DWC3_DCTL, dctl);
+    nabu_log_hex("dwc3:dctl2=", rd(DWC3_DCTL));
+  }
   if (events) {
     for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
     usbPollEvents();
