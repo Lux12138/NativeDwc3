@@ -519,3 +519,63 @@ TWRP 正常态（Android 内核）：
 没有真正工作在（没有 60 MHz UTMI 时钟），两侧互锁，表现为 AHB 挂死。因此下一步
 不再从 core 侧强推 VBUS，而是让 PHY 用自己的 VBUS 比较器
 （`VBUSVLDEXTSEL0=0`/`VBUSVLDEXT0=0`）自行判断，观察 `OSTS.VBUSVLD` 是否变 1。
+
+---
+
+# 2026-10-25 02:45 — run10..run14：上拉、VBUS 与 SPMI 的边界
+
+## run9（重要）：QSCRATCH VBUS 覆盖写完，之后一启动就死锁
+
+    qs:hs=10100000     ← 位确实写进去了
+    qs:osts=0          ← 但 OTG 的 VBUSVLD 仍为 0
+    dwc3:dctl-pre=90f00000 → 无 dctl-post（写 DCTL 时 AHB 锁死）
+
+即使先把 `UTMI_OTG_VBUS_VALID` 写进去、`OSTS` 仍显示 0，随后 RUN 依然死锁。
+结论：**QSCRATCH 的 HS_PHY_CTRL bit20 在本板上不可用**，这条软件 VBUS 路线封死。
+
+## run10：直接写 PHY 的 TERMSEL / XCVRSEL，电气上无反应
+
+厂商 `drive_dp_pulse()` 直接改 `UTMI_CTRL0.TERMSEL`、`UTMI_CTRL1.XCVRSEL`、
+`CFG0` 的两个 override，就能让 PHY 自己发 D+ 脉冲。照抄并保持打开：
+
+    phy:term=21212121   TERMSEL=1、SLEEPM=1 写入并读回确认
+    phy:xcvr=01010101   XCVRSEL=1
+    phy:cfg0t=03030303  CMN + DATAPATH override 均置位
+    → 主机侧 pnputil 监视：没有任何新 USB 设备出现在 D+ 上
+
+写入有效、读回保持，说明 override 没有被核心覆盖；但电气上毫无变化。
+这指向 PHY 模拟侧（上拉电路/模拟电源）没有工作，而不是寄存器配置错误。
+
+## run12：bootloader 移交时的 USB 状态（nabu-usb-keep=1 只读探针）
+
+    keep:gctl=102001    PRTCAPDIR=HOST
+    keep:dctl=f00000    RUN_STOP=0
+    keep:dsts=d3953c    CONNECTSPD=4(SS)、DEVCTRLHLT=1
+    keep:dcfg=80805     DEVSPD=5 (SuperSpeedPlus)
+    keep:g2cfg=102500   、keep:qsg=4、keep:qsh=10000000
+
+ABL 在移交前把控制器切回 host + SS + halt，没有留下可继承的设备态，
+因此“沿用 bootloader 已经点亮 PHY”的思路不成立。
+
+## run11/13/14：SPMI 能映射了，但 mapping table 格式未解
+
+`mapPhys(0x0C440000, 0x1100)` 一直失败（0x1100 不按页对齐），改成 0x2000 后：
+
+    spmi:ver=50000000     PMIC arbiter V5 在线
+
+0xB00 处的表**非空**，前 8 项原始值：
+
+    0x01040400 0x01040500 0x01040600 0x01040900
+    0x01042c00 0x01043600 0x01043700 0x01043900
+
+无论按 MSB-first 还是 LSB-first 的“每层一项、bit8/bit17 为 valid”解析，
+`valid` 都是 0。说明这张表的编码不是 QCOM 公开的那种结构，需要另找格式
+（可能是每层多个 u32，或以 0x0104/0x0105 开头的高字节有其他含义）。
+在读通它之前，PMIC 的 LDO 实际状态读不到。
+
+## 当前唯一待验证的假设
+
+PHY 数字寄存器完全在线（写入/读回一致），但所有能让 D+ 出现上拉的手段都
+没有电气效果。剩下的解释只有 **PHY 的模拟电源（vdda18/vdda33）在 XNU 下
+没有真正到位**。RPMh 的 `l5v/l12v/l2v` 回读只是 RSC 的命令回执，不等于
+PMIC 输出；要证实只能通过 SPMI 读 PM8150 的 LDO 状态。

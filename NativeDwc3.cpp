@@ -370,8 +370,8 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_COMMON0, 0x70, 0);              // FSEL = 0
   phyWrMask(FEMTO_COMMON1, 1u << 5, 1u << 5);     // PLLBTUNE
   phyWrMask(FEMTO_REFCLK, 0x3, 0x2);              // REFCLK_SEL_DEFAULT
-  phyWrMask(FEMTO_COMMON1, 1u << 4, 0);           // VBUSVLDEXTSEL0 = 0: PHY's own comparator
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 0);             // VBUSVLDEXT0 = 0
+  phyWrMask(FEMTO_COMMON1, 1u << 4, 1u << 4);     // VBUSVLDEXTSEL0 (vendor default)
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // VBUSVLDEXT0     (vendor default)
 
   // qcom,param-override-seq = <4 0x70 0x2c 0x74>. hsusb_phy_write_seq writes
   // seq[i] TO base + seq[i+1], so the pairs are 0x70 <- 0x04 and 0x74 <- 0x2c
@@ -519,12 +519,38 @@ static int dwc3Bringup(void)
   nabu_log_puts("dwc3:start\n");
   nabu_log_puts("usb:marker\n");
 
-  int enable = 1, init = 1;
+  int enable = 1, init = 1, keep = 0;
   (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
   (void)PE_parse_boot_argn("nabu-usb-init", &init, sizeof(init));
+  (void)PE_parse_boot_argn("nabu-usb-keep", &keep, sizeof(keep));
   if (!enable) {
     nabu_log_puts("dwc3:off\n");
     return 0;
+  }
+
+  if (keep) {
+    // Fastboot drives this same controller, so the bootloader has already
+    // powered the PHY and wired up QSCRATCH. Read what it left behind instead of
+    // resetting the PHY back into a state XNU cannot bring up.
+    OSSharedPtr<IOMemoryMap> kKeep;
+    volatile uint32_t *k =
+      reinterpret_cast<volatile uint32_t *>(mapPhys(NABU_USB0_CORE_BASE, NABU_USB0_CORE_SIZE, kKeep));
+    if (k == nullptr) {
+      nabu_log_puts("keep:map-fail\n");
+      return -1;
+    }
+    nabu_log_puts("keep:probe\n");
+    nabu_log_hex("keep:gctl=", k[DWC3_GCTL / 4]);
+    nabu_log_hex("keep:dctl=", k[DWC3_DCTL / 4]);
+    nabu_log_hex("keep:dsts=", k[DWC3_DSTS / 4]);
+    nabu_log_hex("keep:dcfg=", k[DWC3_DCFG / 4]);
+    nabu_log_hex("keep:g2cfg=", k[DWC3_GUSB2PHYCFG(0) / 4]);
+    nabu_log_hex("keep:g3ctl=", k[DWC3_GUSB3PIPECTL(0) / 4]);
+    nabu_log_hex("keep:osts=", k[DWC3_OSTS / 4]);
+    nabu_log_hex("keep:qsg=", k[QSCRATCH_GENERAL_CFG / 4]);
+    nabu_log_hex("keep:qsh=", k[QSCRATCH_HS_PHY_CTRL / 4]);
+    nabu_log_flush(0);
+    return 1;
   }
 
   rpmhProbe();
@@ -532,41 +558,55 @@ static int dwc3Bringup(void)
     // PMIC arbiter: probe the block before building any channel/mapping logic.
     OSSharedPtr<IOMemoryMap> spmiKeep;
     volatile uint32_t *spmi =
-      reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x1100, spmiKeep));
-    if (spmi != nullptr) {
+      reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x2000, spmiKeep));
+    if (spmi == nullptr) {
+      nabu_log_puts("spmi:map-fail\n");
+    } else {
       nabu_log_hex("spmi:ver=", spmi[0]);
-      // QCOM's table walk: each level returns an 8-bit result, not one bit.
-      //   IS_1: result bits 0..7, flag bit 8
-      //   IS_0: result bits 9..16, flag bit 17
-      for (unsigned sid = 2; sid <= 4; ++sid) {
-        unsigned apid = 0, valid = 1;
-        const unsigned ppid = (sid << 8) | 0x10; // charger window, register high byte
-        for (unsigned i = 0; i < 16 && valid; ++i) {
-          uint32_t val = spmi[(0xB00 / 4) + i];
-          if (ppid & (1u << (15 - i))) {
-            apid = (apid << 8) | (val & 0xffu);
-            valid = (val >> 8) & 1u;
-          } else {
-            apid = (apid << 8) | ((val >> 9) & 0xffu);
-            valid = (val >> 17) & 1u;
+      // Dump the raw mapping table first: all zeroes means the arbiter's table
+      // was never programmed for this EE, and no walk order can fix that.
+      for (unsigned i = 0; i < 8; ++i) {
+        nabu_log_hex("spmi:mt=", spmi[(0xB00 / 4) + i]);
+      }
+      // Only addresses the board DT names: the charger's USBIN status at 0x1010
+      // and the PD PHY block at 0x1700 on PM8150B (sid 2). Wide APID sweeps
+      // wedged this board before, so this stays a fixed four-entry list.
+      static const unsigned kSpmiRegs[] = { 0x1010, 0x1008, 0x1700, 0x1704 };
+      for (unsigned sid = 2; sid <= 2; ++sid) {
+        for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
+          const unsigned addr = kSpmiRegs[r];
+          unsigned apid = 0, valid = 1;
+          const unsigned ppid = (sid << 8) | ((addr >> 8) & 0xffu);
+          for (unsigned i = 0; i < 16 && valid; ++i) {
+            uint32_t val = spmi[(0xB00 / 4) + i];
+            // pmic_arb_find_apid() walks the table LSB first: level i tests
+            // ppid bit i, not bit 15-i. Getting this backwards makes every
+            // lookup report valid=0.
+            if (ppid & (1u << i)) {
+              apid = (apid << 8) | (val & 0xffu);
+              valid = (val >> 8) & 1u;
+            } else {
+              apid = (apid << 8) | ((val >> 9) & 0xffu);
+              valid = (val >> 17) & 1u;
+            }
           }
-        }
-        nabu_log_hex("spmi:sid=", sid);
-        nabu_log_hex("spmi:apid=", apid);
-        nabu_log_hex("spmi:valid=", valid);
-        if (!valid) {
-          continue;
-        }
-        const unsigned base = (0x80u * apid) / 4u;
-        spmi[base + 0] = (15u << 27) | (0x10u << 4);
-        unsigned done = 0;
-        for (unsigned i = 0; i < 20000; ++i) {
-          if (spmi[base + 2] & 1u) { done = 1; break; }
-          __asm__ volatile("yield" ::: "memory");
-        }
-        nabu_log_hex("spmi:done=", done);
-        if (done) {
-          nabu_log_hex("spmi:sts=", spmi[base + 6] & 0xffu);
+          nabu_log_hex("spmi:ppid=", ppid);
+          nabu_log_hex("spmi:apid=", apid);
+          nabu_log_hex("spmi:valid=", valid);
+          if (!valid) {
+            continue;
+          }
+          const unsigned base = (0x80u * apid) / 4u;
+          spmi[base + 0] = (15u << 27) | ((addr & 0xffu) << 4);
+          unsigned done = 0;
+          for (unsigned i = 0; i < 20000; ++i) {
+            if (spmi[base + 2] & 1u) { done = 1; break; }
+            __asm__ volatile("yield" ::: "memory");
+          }
+          nabu_log_hex("spmi:done=", done);
+          if (done) {
+            nabu_log_hex("spmi:val=", spmi[base + 6] & 0xffu);
+          }
         }
       }
     }
@@ -621,10 +661,12 @@ static int dwc3Bringup(void)
 
   // dwc3_msm_qscratch_reg_init: RAM/BAM clock master enable.
   wr(QSCRATCH_CGCTL, rd(QSCRATCH_CGCTL) | 0x18);
-  // PIPE_UTMI_CLK_SEL|PIPE3_PHYSTATUS_SW is what dwc3-msm sets for an HS-only
-  // port, but with it the core wedged on the very next DCTL run (run 4). Until
-  // the PHY's 60 MHz UTMI clock is proven live, leave the wrapper's clock path
-  // at its default and isolate the VBUS override instead.
+  // POST_RESET half for an HS-only port: route the UTMI clock through the PIPE
+  // and put PHYSTATUS under software control. The vendor also toggles
+  // PIPE_UTMI_CLK_DIS around this, but doing that to a running core wedged the
+  // AHB slave on this board (run 3), so the clock is never disabled here.
+  wr(QSCRATCH_GENERAL_CFG, rd(QSCRATCH_GENERAL_CFG) |
+     QSCRATCH_PIPE_UTMI_CLK_SEL | QSCRATCH_PIPE3_PHYSTATUS_SW);
   nabu_log_hex("qs:cg=", rd(QSCRATCH_CGCTL));
   nabu_log_hex("qs:gen=", rd(QSCRATCH_GENERAL_CFG));
 
@@ -682,35 +724,28 @@ static int dwc3Bringup(void)
     dctl |= DWC3_DCTL_RUN_STOP;
     dctl &= ~DWC3_DCTL_HIRD_THRES(0x1fu);
     dctl |= DWC3_DCTL_HIRD_THRES(0x10);          // DT: snps,hird-threshold = 0x10
-    nabu_log_hex("dwc3:dctl-pre=", dctl);
-    nabu_log_flush(0);
     wr(DWC3_DCTL, dctl);
     nabu_log_hex("dwc3:dctl-post=", rd(DWC3_DCTL));
+    nabu_log_hex("dwc3:dsts-run=", rd(DWC3_DSTS));
     nabu_log_flush(0);
   }
-  {
-    uint32_t sts = rd(DWC3_DSTS);
-    unsigned ran = 0;
-    for (unsigned i = 0; i < 20000; ++i) {
-      sts = rd(DWC3_DSTS);
-      if (!(sts & DWC3_DSTS_DEVCTRLHLT)) { ran = 1; break; }
-      __asm__ volatile("yield" ::: "memory");
-    }
-    nabu_log_hex("dwc3:ran=", ran);
-    nabu_log_hex("dwc3:dsts-run=", sts);
-    nabu_log_hex("dwc3:osts=", rd(DWC3_OSTS));
-    nabu_log_flush(0);
-  }
-  // The QSCRATCH VBUS override (dwc3_override_vbus_status) wedged the AHB slave
-  // on this core both before and after RUN_STOP (runs 5 and 6), so it is not
-  // used: the PHY is left on its own VBUS comparator instead. If the board wires
-  // that pin to 5 V, OSTS.VBUSVLD turns 1 here and the core connects on its own.
-  nabu_log_hex("qs:hs=", rd(QSCRATCH_HS_PHY_CTRL));
-  nabu_log_hex("qs:osts=", rd(DWC3_OSTS));
+  // Hold the D+ pull-up with the PHY's own override bits, exactly the registers
+  // vendor drive_dp_pulse() toggles without involving the controller: CFG0
+  // override, OPMODE normal, TERMSEL (1.5k on D+), XCVRSEL. If the analog path
+  // works at all, the host must see a device from here on, VBUS logic or not.
+  phyWrMask(FEMTO_CFG0, (1u << 1) | (1u << 0), (1u << 1) | (1u << 0));
+  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // XCVRSEL
+  nabu_log_hex("phy:term=", phyRd(FEMTO_UTMI_CTRL0));
+  nabu_log_hex("phy:xcvr=", phyRd(FEMTO_CTRL1));
+  nabu_log_hex("phy:cfg0t=", phyRd(FEMTO_CFG0));
   nabu_log_flush(0);
-  for (unsigned i = 0; i < 400000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  nabu_log_hex("qs:dsts=", rd(DWC3_DSTS));
+  // Give the host time to enumerate while the pull-up is held.
+  for (unsigned i = 0; i < 4000000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  nabu_log_hex("qs:dsts2=", rd(DWC3_DSTS));
   nabu_log_hex("qs:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
+  nabu_log_hex("phy:term2=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_flush(0);
   if (events) {
     for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
