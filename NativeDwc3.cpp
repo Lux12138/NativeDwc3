@@ -207,6 +207,11 @@ static void rpmhProbe(void)
     return;
   }
   nabu_log_hex("rpmh:ldoa2=", rpmhCmdDbAddr("ldoa2"));
+  // The PHY's ref_clk_src is RPMH_CXO_CLK; if that clock is an RPMh resource it
+  // has to be voted on, exactly like the rails. Look the names up first.
+  nabu_log_hex("rpmh:cxo=", rpmhCmdDbAddr("cxo"));
+  nabu_log_hex("rpmh:xo=", rpmhCmdDbAddr("xo"));
+  nabu_log_hex("rpmh:clk=", rpmhCmdDbAddr("clk"));
   nabu_log_hex("rpmh:ldoa5=", rpmhCmdDbAddr("ldoa5"));
   nabu_log_hex("rpmh:ldoa12=", rpmhCmdDbAddr("ldoa12"));
   nabu_log_hex("rpmh:drvid=", rscRd(0));
