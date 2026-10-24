@@ -476,10 +476,33 @@ static void usbPollEvents(void)
   if (count == 0) {
     return;
   }
-  nabu_log_hex("usb:evt0=", g_evt[0]);
-  nabu_log_hex("usb:evt1=", g_evt[1]);
-  nabu_log_hex("usb:evt2=", g_evt[2]);
-  wr(DWC3_GEVNTCOUNT(0), count & 0xfffc);
+  unsigned offset = 0;
+  while (offset + 4 <= count) {
+    uint32_t ev = g_evt[offset / 4];
+    uint32_t type = ev & 0xffu;
+    nabu_log_hex("usb:type=", type);
+    if (type == 0) {                        // device event
+      nabu_log_hex("usb:devt=", g_evt[offset / 4 + 1] & 0xffffu);
+      nabu_log_hex("usb:link=", g_evt[offset / 4 + 1] >> 16);
+      offset += 8;
+    } else if (type == 6) {                 // endpoint event
+      uint32_t ep = g_evt[offset / 4 + 1];
+      uint32_t status = g_evt[offset / 4 + 2];
+      nabu_log_hex("usb:ep=", ep & 0xffu);
+      nabu_log_hex("usb:estatus=", status & 0xffffu);
+      nabu_log_hex("usb:param=", g_evt[offset / 4 + 3]);
+      if ((status & 0xffu) == 1) {          // SETUP packet follows
+        nabu_log_hex("usb:setup0=", g_evt[offset / 4 + 4]);
+        nabu_log_hex("usb:setup1=", g_evt[offset / 4 + 5]);
+        offset += 16;
+      } else {
+        offset += 8;
+      }
+    } else {
+      offset += 4;
+    }
+  }
+  wr(DWC3_GEVNTCOUNT(0), count & 0xfffcu);
 }
 
 static int dwc3Bringup(void)
