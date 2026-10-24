@@ -49,13 +49,6 @@ inline void wr(unsigned long off, uint32_t v) { g_regs[off / 4] = v; }
 inline uint32_t grd(unsigned long off) { return g_gcc[off / 4]; }
 inline void gwr(unsigned long off, uint32_t v) { g_gcc[off / 4] = v; }
 
-static inline uint64_t nabuCnt(void)
-{
-  uint64_t v = 0;
-  __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(v));
-  return v;
-}
-
 static uintptr_t mapPhys(uint64_t phys, uint64_t length, OSSharedPtr<IOMemoryMap> &keep)
 {
   IODeviceMemory *memory = IODeviceMemory::withRange(phys, length);
