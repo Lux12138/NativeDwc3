@@ -274,6 +274,11 @@ static void rpmhProbe(void)
   nabu_log_hex("rpmh:ldoa12=", rpmhCmdDbAddr("ldoa12"));
   nabu_log_hex("rpmh:drvid=", rscRd(0));
   nabu_log_hex("rpmh:config=", rscRd(0x4));
+  nabu_log_hex("rpmh:tcs_ctrl=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CONTROL));
+  nabu_log_hex("rpmh:tcs_en=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_ENABLE));
+  nabu_log_hex("rpmh:tcs_stat=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_STATUS));
+  nabu_log_hex("rpmh:tcs_msgid=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_MSGID));
+  nabu_log_hex("rpmh:tcs_addr=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_ADDR));
 }
 
 // ---- RPMh write path ------------------------------------------------------------
@@ -332,6 +337,8 @@ static bool rpmhSetLdo(uint32_t base, uint32_t mV)
   return ok;
 }
 
+static int g_rpmhWriteEnable;
+
 static bool rpmhUsbPhyRails(void)
 {
   const uint32_t l2 = rpmhCmdDbAddr("ldoa2");
@@ -370,7 +377,7 @@ static int dwc3Bringup(void)
   }
 
   rpmhProbe();
-  (void)rpmhUsbPhyRails();
+  if (g_rpmhWriteEnable) { (void)rpmhUsbPhyRails(); }
   const unsigned failed = gccUsbPowerOn();
   if (!qusb2PhyInit()) {
     nabu_log_puts("dwc3:phy-bad\n");
