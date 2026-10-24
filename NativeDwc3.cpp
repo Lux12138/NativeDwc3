@@ -792,17 +792,11 @@ static int dwc3Bringup(void)
     nabu_log_hex("dwc3:dsts-run=", rd(DWC3_DSTS));
     nabu_log_flush(0);
   }
-  // Hold the D+ pull-up with the PHY's own override bits, exactly the registers
-  // vendor drive_dp_pulse() toggles without involving the controller: CFG0
-  // override, OPMODE normal, TERMSEL (1.5k on D+), XCVRSEL. If the analog path
-  // works at all, the host must see a device from here on, VBUS logic or not.
-  phyWrMask(FEMTO_CFG0, (1u << 1) | (1u << 0), (1u << 1) | (1u << 0));
-  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
-  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // XCVRSEL
-  nabu_log_hex("phy:term=", phyRd(FEMTO_UTMI_CTRL0));
-  nabu_log_hex("phy:xcvr=", phyRd(FEMTO_CTRL1));
-  nabu_log_hex("phy:cfg0t=", phyRd(FEMTO_CFG0));
+  // Stop forcing the pull-up ourselves: the core is in U0 now, so if UTMI is
+  // really working it drives TERMSEL/XCVRSEL by itself. Reading them back after
+  // the run tells us whether the cores's UTMI side ever reaches this PHY.
+  nabu_log_hex("phy:term-pre=", phyRd(FEMTO_UTMI_CTRL0));
+  nabu_log_hex("phy:xcvr-pre=", phyRd(FEMTO_CTRL1));
   nabu_log_flush(0);
   // Give the host time to enumerate while the pull-up is held.
   for (unsigned i = 0; i < 4000000; ++i) { __asm__ volatile("yield" ::: "memory"); }
@@ -820,6 +814,9 @@ static int dwc3Bringup(void)
     }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
     nabu_log_hex("usb:va0=", g_evt[0]);
+    nabu_log_hex("phy:term-post=", phyRd(FEMTO_UTMI_CTRL0));
+    nabu_log_hex("phy:xcvr-post=", phyRd(FEMTO_CTRL1));
+    nabu_log_hex("phy:cfg0-post=", phyRd(FEMTO_CFG0));
     // Same words read through a fresh mapping of the physical address the core
     // was given. If these differ, g_evt is not the memory the DMA targets.
     {
