@@ -378,3 +378,34 @@ XNU 没有 SPMI/充电器驱动，所以这条链断了。软件侧的替代都�
 
 到这为止，DWC3 侧（PHY、core、SMMU、事件环、EP0 缓冲、device 初始化）全部就绪且逐项验证，
 唯一缺口是“core 看不到 VBUS”。
+
+## 2026-10-25 00:00：VBUS 走 PMIC，SPMI 已通电但映射未通
+
+### 已验证
+
+| 项 | 结果 |
+|---|---|
+| PHY 内部 VBUS 检测（VBUSVLDEXT0/SEL0 = 0） | `OSTS` 仍 0；SM8150 的 femto PHY 没有 VBUS 引脚 |
+| ULPIEXTVBUSDRV（bit17） | 已回滚；UTMI 模式下无效 |
+| PMIC arbiter 版本 | `0x50000000`（V5），总线与电源可用 |
+| mapping table 查询 ppid=0x210 | `valid=0`，未命中 |
+
+### 结论
+
+DWC3 的 `OSTS.VBUSVLD` 只能由 PMIC 的 VBUS 检测链路提供：
+
+```
+USB 5 V -> PM8150 charger (SPMI) -> extcon -> dwc3-msm -> 清 RUN_STOP / PHY VBUS 有效
+```
+
+XNU 目前缺的就是这一段的 SPMI 读/配置。arbiter 已经在 V5 模式工作，剩下的是
+`pmic_arb_parse_mapping_table` 的位序对照，以及 PM8150 的 SID 与 charger
+`USBIN_INT_RT_STS` 的准确地址。
+
+### 下一步
+
+1. 对照 `drivers/spmi/spmi-pmic-arb.c` 的 `pmic_arb_parse_mapping_table()`，
+   修正 16 级树的位序（当前实现：IS_1 取 bit0/bit8，IS_0 取 bit9/bit17）。
+2. 确认 AP 的 EE（`qcom,ee`）与 PM8150 的 SID（通常 2），再读 `0x1010`。
+3. 若 VBUS=1 但 PHY 仍看不到，检查 PMIC 的 VBUS 输出是否被 XBL 关掉（可能需要写
+   charger 的 `USBIN_CMD_IL`/`OTG_CMD` 使能检测）。
