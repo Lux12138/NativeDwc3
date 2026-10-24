@@ -373,8 +373,10 @@ static bool femtoPhyInit(void)
   // Internal VBUS detection: the external select waits for a PMIC signal XNU
   // does not produce, so both selects are cleared and the PHY uses its own
   // comparator against the 5 V that is really on the cable.
-  phyWrMask(FEMTO_COMMON1, 1u << 4, 0);           // VBUSVLDEXTSEL0 = 0
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 0);             // VBUSVLDEXT0 = 0
+  // VBUS is really present (TWRP: usb/online=1, 4.8 V); select the external
+  // PMIC-sourced detector and enable it.
+  phyWrMask(FEMTO_COMMON1, 1u << 4, 1u << 4);     // VBUSVLDEXTSEL0 = 1
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // VBUSVLDEXT0 = 1
   phyWrMask(FEMTO_COMMON2, 1u << 0, 1u << 0);     // VREGBYPASS
   phyWrMask(FEMTO_CTRL2, (1u << 3) | (1u << 2), (1u << 3) | (1u << 2));
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 1u << 0);  // SLEEPM
@@ -501,24 +503,6 @@ static int dwc3Bringup(void)
       reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x1100, spmiKeep));
     if (spmi != nullptr) {
       nabu_log_hex("spmi:ver=", spmi[0]);
-      for (unsigned ee = 0; ee < 2; ++ee) {
-        unsigned hits = 0;
-        for (unsigned apid = 0; apid < 64; ++apid) {
-          const unsigned base = (0x10000u * ee + 0x80u * apid) / 4u;
-          spmi[base + 0] = (15u << 27) | (0x10u << 4);
-          unsigned done = 0;
-          for (unsigned i = 0; i < 20000; ++i) {
-            if (spmi[base + 2] & 1u) { done = 1; break; }
-            __asm__ volatile("yield" ::: "memory");
-          }
-          if (done) {
-            ++hits;
-            nabu_log_hex("spmi:a=", (ee << 8) | apid);
-            nabu_log_hex("spmi:d=", spmi[base + 6] & 0xffu);
-          }
-        }
-        nabu_log_hex("spmi:hits=", hits);
-      }
     }
   }
   (void)rpmhUsbPhyRails();
