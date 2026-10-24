@@ -413,7 +413,7 @@ static bool usbEventInit(void)
   wr(DWC3_GEVNTADRHI(0), static_cast<uint32_t>(g_evtPhys >> 32));
   wr(DWC3_GEVNTSIZ(0), 4096);
   wr(DWC3_GEVTEN, 1);
-  wr(DWC3_DEVTEN, 0); // events stay off until an interrupt handler exists
+  wr(DWC3_DEVTEN, 0xf); // disconnect, reset, connect-done, setup
   nabu_log_hex("usb:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
   return true;
 }
