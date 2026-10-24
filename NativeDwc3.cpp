@@ -335,10 +335,8 @@ static bool femtoPhyInit(void)
   nabu_log_hex("phy:r800=", phyRd(0x800));
   nabu_log_hex("phy:common2=", phyRd(FEMTO_COMMON2));
   nabu_log_hex("phy:cfg0=", phyRd(FEMTO_CFG0));
-  if (phyRd(FEMTO_CFG0) == 0) {
-    nabu_log_puts("phy:dead\n");
-    return false;
-  }
+  // CFG0 reads 0 on a healthy but uninitialised femto PHY; COMMON2 (0x5c)
+  // returning 0xc1c1c1c1 is its reset value. Do not bail out here.
   phyWrMask(FEMTO_CFG0, 1u << 1, 1u << 1);        // CMN_CTRL_OVERRIDE_EN
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 1u << 1);  // POR
   phyWrMask(FEMTO_COMMON0, 0x70, 0);              // FSEL = 0
