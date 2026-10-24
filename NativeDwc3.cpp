@@ -142,6 +142,64 @@ static unsigned gccUsbPowerOn(void)
   return failed;
 }
 
+// ---- QUSB2 PHY (hsphy@88e2000) ------------------------------------------------
+// v2 register layout and init table from drivers/phy/qualcomm/phy-qcom-qusb2.c.
+// The DWC3 global registers only answer once this PHY supplies the UTMI clock;
+// before that every core read returns 0 (hardware 2026-10-24).
+#define QUSB2_BASE 0x088E2000ULL
+#define QUSB2_PLL_STATUS 0x1a0
+#define QUSB2_PLL_LOCKED (1u << 5)
+#define QUSB2_PORT_POWERDOWN 0x210
+#define QUSB2_POWER_DOWN (1u << 0)
+#define QUSB2_CLAMP_N_EN (1u << 5)
+
+static OSSharedPtr<IOMemoryMap> g_phyKeep;
+static volatile uint32_t *g_phy;
+
+static void phyWr(unsigned long off, uint32_t v) { g_phy[off / 4] = v; }
+static uint32_t phyRd(unsigned long off) { return g_phy[off / 4]; }
+
+static bool qusb2PhyInit(void)
+{
+  const uintptr_t va = mapPhys(QUSB2_BASE, 0x1000, g_phyKeep);
+  g_phy = reinterpret_cast<volatile uint32_t *>(va);
+  if (g_phy == nullptr) {
+    return false;
+  }
+  static const unsigned long tbl[][2] = {
+    { 0x004, 0x03 },  // PLL_ANALOG_CONTROLS_TWO
+    { 0x18c, 0x7c },  // PLL_CLOCK_INVERTERS
+    { 0x02c, 0x80 },  // PLL_CMODE
+    { 0x184, 0x0a },  // PLL_LOCK_DELAY
+    { 0x0b4, 0x19 },  // PLL_DIGITAL_TIMERS_TWO
+    { 0x194, 0x40 },  // PLL_BIAS_CONTROL_1
+    { 0x198, 0x20 },  // PLL_BIAS_CONTROL_2
+    { 0x214, 0x21 },  // PWR_CTRL2
+    { 0x220, 0x00 },  // IMP_CTRL1
+    { 0x224, 0x58 },  // IMP_CTRL2
+    { 0x240, 0x30 },  // TUNE1
+    { 0x244, 0x29 },  // TUNE2: eFuse trim; 0x29 is the v2 default
+    { 0x248, 0xca },  // TUNE3
+    { 0x24c, 0x04 },  // TUNE4
+    { 0x250, 0x03 },  // TUNE5
+    { 0x23c, 0x00 },  // CHG_CTRL2
+  };
+  for (unsigned i = 0; i < sizeof(tbl) / sizeof(tbl[0]); ++i) {
+    phyWr(tbl[i][0], static_cast<uint32_t>(tbl[i][1]));
+  }
+  uint32_t pd = phyRd(QUSB2_PORT_POWERDOWN);
+  phyWr(QUSB2_PORT_POWERDOWN, pd & ~(QUSB2_POWER_DOWN | QUSB2_CLAMP_N_EN));
+  for (unsigned i = 0; i < 1000000; ++i) {
+    if (phyRd(QUSB2_PLL_STATUS) & QUSB2_PLL_LOCKED) {
+      nabu_log_puts("dwc3:phy-lock\n");
+      return true;
+    }
+    __asm__ volatile("yield" ::: "memory");
+  }
+  nabu_log_hex("dwc3:phy-status=", phyRd(QUSB2_PLL_STATUS));
+  return false;
+}
+
 static int dwc3Bringup(void)
 {
   if (g_bringup_done) {
@@ -163,6 +221,9 @@ static int dwc3Bringup(void)
   }
 
   const unsigned failed = gccUsbPowerOn();
+  if (!qusb2PhyInit()) {
+    nabu_log_puts("dwc3:phy-bad\n");
+  }
   nabu_log_hex("dwc3:clkfail=", failed);
   nabu_mark_num("dwc3:clkfail=", (unsigned long)failed, 2180);
   if (failed == 0xff) {
