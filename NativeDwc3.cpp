@@ -553,6 +553,17 @@ static int dwc3Bringup(void)
   wr(DWC3_GCTL, DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_DEVICE) | DWC3_GCTL_DSBLCLKGTNG);
   for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
   nabu_log_hex("dwc3:gsts2=", rd(DWC3_GSTS));
+  // Re-latch attempt: pulse CORESOFTRESET once more with PRTCAPDIR already set.
+  {
+    uint32_t g = rd(DWC3_GCTL);
+    wr(DWC3_GCTL, g | DWC3_GCTL_CORESOFTRESET);
+    (void)waitMask(g_regs + DWC3_GCTL / 4, DWC3_GCTL_CORESOFTRESET, DWC3_GCTL_CORESOFTRESET, 10000);
+    wr(DWC3_GCTL, g & ~DWC3_GCTL_CORESOFTRESET);
+    (void)waitMask(g_regs + DWC3_GCTL / 4, DWC3_GCTL_CORESOFTRESET, 0, 10000);
+    for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    nabu_log_hex("dwc3:gctl3=", rd(DWC3_GCTL));
+    nabu_log_hex("dwc3:gsts3=", rd(DWC3_GSTS));
+  }
 
   uint32_t p2 = rd(DWC3_GUSB2PHYCFG(0));
   p2 &= ~DWC3_GUSB2PHYCFG_SUSPHY;
