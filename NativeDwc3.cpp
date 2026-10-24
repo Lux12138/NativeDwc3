@@ -610,7 +610,10 @@ static int dwc3Bringup(void)
         const unsigned addr = kSpmiRegs[r];
         const unsigned ppid = (2u << 8) | ((addr >> 8) & 0xffu);  // PM8150B = sid 2
         unsigned apid = 0xffffffffU;
-        for (unsigned a = 0; a < 512; ++a) {
+        // The APID table is only 0x400 bytes (256 entries) from 0x900; reading
+        // past it hits unimplemented addresses and wedges the arbiter's AXI
+        // slave, which is what killed run 20.
+        for (unsigned a = 0; a < 128; ++a) {
           uint32_t ent = spmi[(0x900 / 4) + a];
           if (!ent) { continue; }
           if (((ent >> 8) & 0xfffu) == ppid) { apid = a; break; }
