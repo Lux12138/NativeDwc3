@@ -791,10 +791,10 @@ static int dwc3Bringup(void)
   nabu_log_flush(0);
   if (events) {
     // The host resets the port and asks for descriptors within milliseconds of
-    // the pull-up appearing. Keep the core running and poll the event ring for
-    // ~10 s so the connection event and the first SETUP packet land in the log.
-    for (unsigned round = 0; round < 100; ++round) {
-      for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    // the pull-up appearing. A yield loop only lasts a few ms, so hold the link
+    // with a real delay: ~40 s, polling the event ring every 20 ms.
+    for (unsigned round = 0; round < 2000; ++round) {
+      IODelay(20000);
       usbPollEvents();
     }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
