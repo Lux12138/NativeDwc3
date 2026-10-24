@@ -697,10 +697,10 @@ static int dwc3Bringup(void)
         if (apid == 0xffffffffU) {
           continue;
         }
-        // v5 observer channel: 0x10000*ee + 0x80*apid. Map the containing page
-        // and offset into it, so an unaligned 0x80*apid still maps.
+        // v5 observer channel: obsrvr base + 0x80*apid (ee = 0). The arbiter's
+        // DT gives obsrvr = 0x0E600000; adding the offset to `core` wedged it.
         OSSharedPtr<IOMemoryMap> chanKeep;
-        const uint64_t chanPhys = 0x0C440000ULL + 0x80ULL * apid;
+        const uint64_t chanPhys = 0x0E600000ULL + 0x80ULL * apid;
         const uint64_t pagePhys = chanPhys & ~0xFFFULL;
         volatile uint32_t *page = reinterpret_cast<volatile uint32_t *>(
           mapPhys(pagePhys, 0x1000, chanKeep));
