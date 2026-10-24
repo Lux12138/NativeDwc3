@@ -276,6 +276,78 @@ static void rpmhProbe(void)
   nabu_log_hex("rpmh:config=", rscRd(0x4));
 }
 
+// ---- RPMh write path ------------------------------------------------------------
+// v2.7 TCS layout (major = 1 < 3). One command per trigger, each waited for.
+#define RSC_TCS_SIZE 672
+#define RSC_TCS_CONTROL 0x14
+#define RSC_TCS_CMD_ENABLE 0x1c
+#define RSC_TCS_CMD_MSGID 0x30
+#define RSC_TCS_CMD_ADDR 0x34
+#define RSC_TCS_CMD_DATA 0x38
+#define RSC_TCS_CMD_STATUS 0x3c
+#define RSC_TCS_CMD_STEP 20
+#define TCS_AMC_ENABLE (1u << 16)
+#define TCS_AMC_TRIGGER (1u << 24)
+#define RPMH_MSGID_LEN 8u
+#define RPMH_MSGID_RESP (1u << 8)
+#define RPMH_MSGID_WRITE (1u << 16)
+#define RPMH_CMD_COMPL (1u << 16)
+
+static void rscWr(unsigned long off, uint32_t v) { g_rsc[off / 4] = v; }
+
+static bool rpmhWrite(uint32_t addr, uint32_t data)
+{
+  const unsigned long tcs = RSC_TCS_OFFSET; // active TCS 0
+  rscWr(tcs + RSC_TCS_CMD_MSGID, RPMH_MSGID_LEN | RPMH_MSGID_RESP | RPMH_MSGID_WRITE);
+  rscWr(tcs + RSC_TCS_CMD_ADDR, addr);
+  rscWr(tcs + RSC_TCS_CMD_DATA, data);
+  rscWr(tcs + RSC_TCS_CMD_ENABLE, 1);
+
+  uint32_t ctrl = rscRd(tcs + RSC_TCS_CONTROL);
+  ctrl &= ~TCS_AMC_TRIGGER;
+  rscWr(tcs + RSC_TCS_CONTROL, ctrl);
+  ctrl &= ~TCS_AMC_ENABLE;
+  rscWr(tcs + RSC_TCS_CONTROL, ctrl);
+  rscWr(tcs + RSC_TCS_CONTROL, ctrl | TCS_AMC_ENABLE);
+  rscWr(tcs + RSC_TCS_CONTROL, ctrl | TCS_AMC_ENABLE | TCS_AMC_TRIGGER);
+
+  for (unsigned i = 0; i < 1000000; ++i) {
+    if (rscRd(tcs + RSC_TCS_CMD_STATUS) & RPMH_CMD_COMPL) {
+      return true;
+    }
+    __asm__ volatile("yield" ::: "memory");
+  }
+  return false;
+}
+
+// Voltage register takes mV; mode 7 = PMIC5 LDO HPM; enable = 1.
+static bool rpmhSetLdo(uint32_t base, uint32_t mV)
+{
+  if (base == 0) {
+    return false;
+  }
+  bool ok = rpmhWrite(base + 0x0, mV);
+  ok = rpmhWrite(base + 0x8, 7) && ok;
+  ok = rpmhWrite(base + 0x4, 1) && ok;
+  return ok;
+}
+
+static bool rpmhUsbPhyRails(void)
+{
+  const uint32_t l2 = rpmhCmdDbAddr("ldoa2");
+  const uint32_t l5 = rpmhCmdDbAddr("ldoa5");
+  const uint32_t l12 = rpmhCmdDbAddr("ldoa12");
+  nabu_log_hex("rpmh:l2=", l2);
+  nabu_log_hex("rpmh:l5=", l5);
+  nabu_log_hex("rpmh:l12=", l12);
+  bool ok = true;
+  ok = rpmhSetLdo(l5, 880) && ok;   // vdda-pll
+  ok = rpmhSetLdo(l2, 3072) && ok;  // vdda33
+  ok = rpmhSetLdo(l12, 1800) && ok; // vdda18
+  nabu_log_puts(ok ? "rpmh:rails-ok\n" : "rpmh:rails-fail\n");
+  return ok;
+}
+
 static int dwc3Bringup(void)
 {
   if (g_bringup_done) {
@@ -298,6 +370,7 @@ static int dwc3Bringup(void)
   }
 
   rpmhProbe();
+  (void)rpmhUsbPhyRails();
   const unsigned failed = gccUsbPowerOn();
   if (!qusb2PhyInit()) {
     nabu_log_puts("dwc3:phy-bad\n");
