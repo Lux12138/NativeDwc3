@@ -501,33 +501,22 @@ static int dwc3Bringup(void)
       reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x1100, spmiKeep));
     if (spmi != nullptr) {
       nabu_log_hex("spmi:ver=", spmi[0]);
-      // V5 mapping: walk the 16-level table for (sid=2, addr=0x1010) = ppid 0x0210.
-      // PM8150 charger USBIN_INT_RT_STS lives at 0x1010.
-      unsigned apid = 0;
-      unsigned valid = 1;
-      for (unsigned i = 0; i < 16 && valid; ++i) {
-        uint32_t val = spmi[(0xB00 / 4) + i];
-        if (0x0210 & (1u << (15 - i))) {
-          apid = (apid << 1) | (val & 1u);
-          valid = (val >> 8) & 1u;
-        } else {
-          apid = (apid << 1) | ((val >> 9) & 1u);
-          valid = (val >> 17) & 1u;
-        }
-      }
-      nabu_log_hex("spmi:apid=", apid);
-      nabu_log_hex("spmi:valid=", valid);
-      if (valid) {
-        const unsigned base = (0x10000u * 0u + 0x80u * apid) / 4u; // EE 0, OBS channel
-        spmi[base + 0] = (15u << 27) | ((0x1010u & 0xffu) << 4);  // READ, 1 byte
+      // Brute force: skip the mapping table entirely. The V5 observer channel for
+      // (EE 0, APID n) is 0x80 * n bytes; issue a 1-byte READ of register 0x10 to
+      // each and keep the ones that answer with something plausible.
+      for (unsigned apid = 0; apid < 64; ++apid) {
+        const unsigned base = (0x80u * apid) / 4u;
+        spmi[base + 0] = (15u << 27) | (0x10u << 4);
         unsigned done = 0;
-        for (unsigned i = 0; i < 100000; ++i) {
+        for (unsigned i = 0; i < 20000; ++i) {
           if (spmi[base + 2] & 1u) { done = 1; break; }
           __asm__ volatile("yield" ::: "memory");
         }
-        nabu_log_hex("spmi:done=", done);
-        nabu_log_hex("spmi:status=", spmi[base + 2]);
-        nabu_log_hex("spmi:vbus=", spmi[base + 6]);
+        uint32_t data = spmi[base + 6] & 0xffu;
+        if (done && data != 0x00u && data != 0xffu) {
+          nabu_log_hex("spmi:a=", apid);
+          nabu_log_hex("spmi:d=", data);
+        }
       }
     }
   }
