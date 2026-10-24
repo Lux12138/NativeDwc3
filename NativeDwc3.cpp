@@ -509,6 +509,9 @@ static bool usbEventInit(void)
   wr(DWC3_GEVNTSIZ(0), 4096);
   wr(DWC3_GEVTEN, 1);
   wr(DWC3_DEVTEN, 0xf); // disconnect, reset, connect-done, setup
+  nabu_log_hex("usb:evtadr=", rd(DWC3_GEVNTADRLO(0)));
+  nabu_log_hex("usb:evtadrhi=", rd(DWC3_GEVNTADRHI(0)));
+  nabu_log_hex("usb:evtsiz=", rd(DWC3_GEVNTSIZ(0)));
   nabu_log_hex("usb:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
   // A hang right after the ring is armed loses everything still in DRAM, so put
   // the arm step on the medium before the risky part starts.
