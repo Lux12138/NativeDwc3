@@ -337,7 +337,7 @@ static bool rpmhSetLdo(uint32_t base, uint32_t mV)
   return ok;
 }
 
-static int g_rpmhWriteEnable;
+static int g_rpmhWriteEnable = 1;
 
 static bool rpmhUsbPhyRails(void)
 {
