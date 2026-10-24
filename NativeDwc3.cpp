@@ -684,7 +684,7 @@ static int dwc3Bringup(void)
       }
       // The APID table can be up to 512 entries; the charger's APID may live past
       // 256. Read a bounded slice and stop at the first unimplemented entry.
-      for (unsigned a = 256; a < 320; ++a) {
+      for (unsigned a = 256; a < 512; ++a) {
         uint32_t ent = spmi[(0x900 / 4) + a];
         if (ent == 0xffffffffu) { break; }
         if (!ent) { continue; }
@@ -692,7 +692,7 @@ static int dwc3Bringup(void)
       }
       static const unsigned kSpmiRegs[] = {
         0x1310, 0x1308, 0x1544,
-        0xC040, 0xC044, 0xC045, 0xC046,
+        0xC840, 0xC846, 0xC940, 0xC946,
       };
       for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
         const unsigned addr = kSpmiRegs[r];
@@ -709,7 +709,7 @@ static int dwc3Bringup(void)
         unsigned apid = 0xffffffffU;
         // The charger's APID sits at 266 (PPID 0x210) and the PD PHY's at 273
         // (0x217); the old 128-entry scan never reached them.
-        for (unsigned a = 0; a < 320; ++a) {
+        for (unsigned a = 0; a < 512; ++a) {
           uint32_t ent = spmi[(0x900 / 4) + a];
           if (!ent) { continue; }
           if (((ent >> 8) & 0xfffu) == ppid) { apid = a; break; }
