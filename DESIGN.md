@@ -698,3 +698,44 @@ TLMM 需要知道具体引脚号，也没有原理图。
 **唯一的新线索**：ABL 的 `0x70=0x84` 与 DT 的 `0x04` 不同。如果后面能拿到
 ABL 的 USB 配置（XBL 源码或 bootloader dump），可以顺带确认它给
 `vbusvldext` 做了什么。
+
+# 2026-10-25 09:00 — run39..run42：VBUS 引脚定位到 GPIO 38，TLMM 写不生效
+
+## 定位到唯一候选引脚
+
+`drivers/pinctrl/qcom/pinctrl-sm8150.c`：
+
+    static const char * const usb_phy_groups[] = { "gpio38" };
+    [38] = PINGROUP(38, SOUTH, usb_phy, NA, ...)
+
+`PINGROUP(id, f1, f2, ...)` 展开为 `funcs = { "gpio", f1, f2, ... }`，
+所以 GPIO 38 的功能表是 `{gpio, SOUTH, usb_phy}`，**usb_phy = func 2**。
+这是全表里唯一带 `usb_phy` 功能的引脚，也就是 PHY 的 VBUS 侧信号。
+
+## 两次操作与结果
+
+| 版本 | 写入 | 读回 | 结果 |
+|------|------|------|------|
+| run40 | func=1 → func=2 (0x03D38000) | `38new=2` | 无变化 |
+| run41 | func=0 + OE + 输出高 (同上) | `38io=0` | 无变化 |
+| run42 | func=2 @ **0x03026000** | `38old=0`、`38new=0` | **写不进去** |
+
+**重要更正**：TLMM 的真实基址是 `pinctrl@03000000`（DT 与
+`sm8150-pinctrl 3000000.pinctrl` 都这么写），不是 run39-41 用的 `0x03D00000`。
+前三次 GPIO 操作打在错误地址上，数据无效（也说明 0x03D38000 那两次写入没有
+碰到真实引脚，系统仍能正常复位）。
+
+## 当前卡点
+
+在 `0x03026000`（GPIO 38 的 CFG）读到全 0，写 `2` 读回仍是 0，说明 **TLMM
+寄存器写入不生效**。`gcc-sm8150.c` 里没有 TLMM 的 AHB 时钟，它本应常开，
+所以缺的可能是：
+
+- TLMM 所在总线的访问使能（NoC / platform 层的 power domain），或
+- SM8150 的 TLMM 采用分 tile 布局，GPIO 38（SOUTH）的寄存器不一定在
+  `base + id*0x1000`。
+
+下一步是先确认 TLMM 的寄存器布局（在 `pinctrl-msm.h` 的 `PINGROUP` 宏里
+确认 `ctl_reg` 的算法），再解决访问使能，然后把 GPIO 38 切到 `usb_phy`。
+一旦这个引脚进入 usb_phy 模式且电平为高，PHY 的 VBUS 侧就应当成立，
+`OSTS.VBUSVLD` 会变 1，上拉随之出现——这是目前唯一还没走完的路径。
