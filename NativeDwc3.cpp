@@ -494,6 +494,16 @@ static int dwc3Bringup(void)
   }
 
   rpmhProbe();
+  {
+    // PMIC arbiter: probe the block before building any channel/mapping logic.
+    OSSharedPtr<IOMemoryMap> spmiKeep;
+    volatile uint32_t *spmi =
+      reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x1100, spmiKeep));
+    if (spmi != nullptr) {
+      nabu_log_hex("spmi:ver=", spmi[0]);
+      nabu_log_hex("spmi:int=", spmi[1]);
+    }
+  }
   (void)rpmhUsbPhyRails();
   // RPMh completion means the RSC accepted the command, not that the PMIC
   // finished ramping. Give the rails time before the PHY AHB is touched.
