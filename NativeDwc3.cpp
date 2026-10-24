@@ -606,6 +606,24 @@ static int dwc3Bringup(void)
     nabu_log_hex("keep:osts=", k[DWC3_OSTS / 4]);
     nabu_log_hex("keep:qsg=", k[QSCRATCH_GENERAL_CFG / 4]);
     nabu_log_hex("keep:qsh=", k[QSCRATCH_HS_PHY_CTRL / 4]);
+    // What did the bootloader leave in the PHY? fastboot's USB ran on this PHY,
+    // so if it kept a PLL/analog configuration we want that on the record.
+    {
+      OSSharedPtr<IOMemoryMap> pKeep;
+      volatile uint32_t *p = reinterpret_cast<volatile uint32_t *>(
+        mapPhys(QUSB2_BASE, 0x1000, pKeep));
+      if (p == nullptr) {
+        nabu_log_puts("keep:phy-map-fail\n");
+      } else {
+        for (unsigned off = 0; off <= 0x38; off += 4) {
+          nabu_log_hex("keep:pll=", (off << 16) | (p[off / 4] & 0xffu));
+        }
+        for (unsigned off = 0x3c; off <= 0xa0; off += 4) {
+          nabu_log_hex("keep:reg=", (off << 16) | (p[off / 4] & 0xffu));
+        }
+        nabu_log_hex("keep:reg=", (0xb4u << 16) | (p[0xb4 / 4] & 0xffu));
+      }
+    }
     nabu_log_flush(0);
     return 1;
   }
