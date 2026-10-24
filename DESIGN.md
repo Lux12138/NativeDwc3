@@ -208,3 +208,61 @@ XNU 当前没有 PMIC（SPMI/RPMh）驱动，所以 Stage 1 之前必须先补�
 
 仍然阻塞的点：PHY 数字接口读 0。三路模拟电源与 XO 已回读确认到位，所以下一步是
 PHY 的 AHB 访问条件（`usb_phy_cfg_ahb2phy` 的时钟/复位），而不是供电。
+
+## 2026-10-24 深夜：EP0 基础设施完成，PHY 仍是墙
+
+已完成并回读验证：
+
+| 项 | 值 |
+|---|---|
+| RPMh LDO | `l5=880mV`、`l2=3072mV`、`l12=1800mV`，`xo.lvl=3` |
+| DWC3 core | `cap=0x01100020`（XHCI 1.1）、`sid=0x33313130`（DWC_usb31） |
+| Device 模式 | `gctl2=0x2001`（PRTCAPDIR=2） |
+| 速度 | `dsts=0xd20001`（HS/FS 已请求） |
+| SMMU | 独立条目 `slot=6`、`bank=36`、`SMR=0x80000140`、`S2CR=0x24`（UFS 的 bank 未动） |
+| 事件环 | 4 KiB 物理连续 @ `0xcaa4xxxx`，GEVTEN/DEVTEN 已配置 |
+| 事件 | 0 |
+| PC 端枚举 | 无新设备 |
+
+### PHY 的 AHB 端口在 XNU 下没有响应
+
+对 `0x088E2000`（DTS 的 `hsphy@88e2000`）无论读哪些偏移、无论是否复位、无论是否执行 femto
+序列，读回的都是总线默认 pattern：
+
+- `0x00` → `0`
+- `0x5c`（COMMON2）→ `0xc1c1c1c1`
+- `0x54`（COMMON0）→ `0x88888888`
+
+写入后再读不变，说明**写也没有落到 PHY**。扫 64 KiB 窗口（`0x88e0000`）会在未解码的页上挂死，
+所以只能按单页访问。
+
+排除项：
+
+1. 模拟供电：RPMh 回读确认。
+2. 复位：`GCC_QUSB2PHY_PRIM_BCR` 已 assert→deassert，读回 0。
+3. AHB 桥复位：`GCC_USB_PHY_CFG_AHB2PHY_BCR` 已释放，`0x6A004` 读回 1。
+4. XBL 遗留配置：不复位直接读，仍是同样 pattern，说明 XBL 跳转前已经关掉 PHY。
+5. Mu UEFI：`nabuPkg` 没有 USB 驱动，`UsbfnDwc3Dxe` 只处理端点；fastboot 的 USB 由 XBL 提供。
+
+### Android 内核的对照（TWRP dmesg）
+
+```
+androidboot.usbcontroller=a600000.dwc3
+msm-dwc3 a600000.ssusb: USB core frequency = 200000000
+dwc3 a600000.dwc3: changing max_speed on rev 00000000
+msm-dwc3 a600000.ssusb: DWC3 exited from low power mode
+```
+
+关键点：**Android 内核读到的 GSNPSID 也是 0（rev 00000000）**，它并不依赖这个值，而是由 QCOM
+downstream 的 PHY 驱动完成 PHY 上电，然后在 `msm_dwc3_resume` 里退出低功耗模式。mainline 的
+femto 驱动与它并不等价。
+
+### 下一步
+
+PHY 这一层需要换证据来源，不能再靠盲写寄存器：
+
+1. 从 TWRP 的 `/proc/kcore` 按 ELF 的 `p_paddr` 取 `0x88E2000`，得到 Android 下 PHY 寄存器的
+   真实值，和 XNU 的 pattern 对比。
+2. 或者移植 QCOM downstream 的 SM8150 HS PHY 驱动（`phy-msm-snps-hs` 系列），它才是这块板
+   在 Android 上实际使用的代码。
+3. 在拿到对照值之前，`nabu-usb` 保持关闭，驱动不碰 USB 硬件。
