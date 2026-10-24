@@ -325,6 +325,8 @@ static void phyWrMask(unsigned long off, uint32_t mask, uint32_t val)
   phyWr(off, (v & ~mask) | (val & mask));
 }
 
+static int g_phyInitMode;
+
 static bool femtoPhyInit(void)
 {
   const uintptr_t va = mapPhys(QUSB2_BASE, 0x1000, g_phyKeep);
@@ -460,21 +462,14 @@ static int dwc3Bringup(void)
     return -1;
   }
 
-  // Release the QUSB2 PHY reset before the femto init, as qcom_snps_hsphy_init does.
-  if (g_gcc != nullptr) {
-    gwr(GCC_QUSB2PHY_PRIM_BCR, 0x1);
-    for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-    gwr(GCC_QUSB2PHY_PRIM_BCR, 0x0);
+  // XBL already brought this PHY up for fastboot. Do not reset or reprogram it here:
+  // the femto sequence leaves the AHB port answering only bus-default data.
+  g_phy = reinterpret_cast<volatile uint32_t *>(mapPhys(QUSB2_BASE, 0x1000, g_phyKeep));
+  if (g_phy != nullptr) {
+    nabu_log_hex("phy:keep0=", phyRd(FEMTO_CFG0));
+    nabu_log_hex("phy:keep5c=", phyRd(FEMTO_COMMON2));
   }
-
-  nabu_log_hex("dwc3:bcr=", grd(GCC_USB30_PRIM_BCR));
-  nabu_log_hex("dwc3:ahbbcr=", grd(GCC_USB_PHY_CFG_AHB2PHY_BCR));
-  nabu_log_hex("dwc3:ahbclk=", grd(0x6a004));
-  nabu_log_hex("dwc3:gdscr2=", grd(GCC_USB30_PRIM_GDSCR));
-  nabu_log_hex("dwc3:phybcr=", grd(GCC_QUSB2PHY_PRIM_BCR));
-  if (!femtoPhyInit()) {
-    nabu_log_puts("dwc3:phy-bad\n");
-  }
+  if (g_phyInitMode) { (void)femtoPhyInit(); }
 
 
   const uintptr_t va = mapPhys(NABU_USB0_CORE_BASE, NABU_USB0_CORE_SIZE, g_keep);
