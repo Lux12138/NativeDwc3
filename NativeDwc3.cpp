@@ -326,6 +326,10 @@ static bool femtoPhyInit(void)
   if (g_phy == nullptr) {
     return false;
   }
+  nabu_log_hex("phy:r0=", phyRd(0x0));
+  nabu_log_hex("phy:r4=", phyRd(0x4));
+  nabu_log_hex("phy:r1a0=", phyRd(0x1a0));
+  nabu_log_hex("phy:common2=", phyRd(FEMTO_COMMON2));
   nabu_log_hex("phy:cfg0=", phyRd(FEMTO_CFG0));
   if (phyRd(FEMTO_CFG0) == 0) {
     nabu_log_puts("phy:dead\n");
