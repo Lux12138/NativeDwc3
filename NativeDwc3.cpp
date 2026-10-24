@@ -325,7 +325,7 @@ static void phyWrMask(unsigned long off, uint32_t mask, uint32_t val)
   phyWr(off, (v & ~mask) | (val & mask));
 }
 
-static int g_phyInitMode;
+static int g_phyInitMode = 1;
 
 static bool femtoPhyInit(void)
 {
@@ -356,6 +356,8 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 0);        // POR = 0
   phyWrMask(FEMTO_CTRL2, 1u << 3, 0);             // SUSPEND_N_SEL = 0
   phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // CMN override off
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 0);        // SLEEPM = 0: phy_power_on
+  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
 
   for (unsigned i = 0; i < 100000; ++i) {
     __asm__ volatile("yield" ::: "memory");
@@ -462,15 +464,13 @@ static int dwc3Bringup(void)
     return -1;
   }
 
-  // XBL already brought this PHY up for fastboot. Do not reset or reprogram it here:
-  // the femto sequence leaves the AHB port answering only bus-default data.
-  // Read only the one PHY page. A wider scan (0x88e0000, 64 KiB) hung the board on
-  // an undecoded page, so keep every access inside the documented 0x400 window.
-  g_phy = reinterpret_cast<volatile uint32_t *>(mapPhys(QUSB2_BASE, 0x1000, g_phyKeep));
-  if (g_phy != nullptr) {
-    nabu_log_hex("phy:keep0=", phyRd(FEMTO_CFG0));
-    nabu_log_hex("phy:keep5c=", phyRd(FEMTO_COMMON2));
+  // Reset pulse, then the femto init, then power-on (clear SLEEPM).
+  if (g_gcc != nullptr) {
+    gwr(GCC_QUSB2PHY_PRIM_BCR, 0x1);
+    for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    gwr(GCC_QUSB2PHY_PRIM_BCR, 0x0);
   }
+  g_phy = reinterpret_cast<volatile uint32_t *>(mapPhys(QUSB2_BASE, 0x1000, g_phyKeep));
   if (g_phyInitMode) { (void)femtoPhyInit(); }
 
 
