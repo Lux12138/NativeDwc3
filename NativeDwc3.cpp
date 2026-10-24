@@ -745,6 +745,14 @@ static int dwc3Bringup(void)
   wr(DWC3_DCFG, rd(DWC3_DCFG) & ~0x7u);
   nabu_log_hex("dwc3:dcfg=", rd(DWC3_DCFG));
   const bool events = usbEventInit();
+  // Firmware already carries a valid SMMU entry for this stream (run 17 read
+  // SMR=0x80000140 with S2CR=3), so the event ring can DMA without us taking a
+  // context bank. With the DMA path accounted for, assert the software VBUS
+  // override exactly where dwc3-msm does it: before starting the gadget.
+  wr(QSCRATCH_HS_PHY_CTRL, rd(QSCRATCH_HS_PHY_CTRL) | QSCRATCH_UTMI_OTG_VBUS_VALID);
+  nabu_log_hex("qs:hs=", rd(QSCRATCH_HS_PHY_CTRL));
+  nabu_log_hex("qs:osts-pre=", rd(DWC3_OSTS));
+  nabu_log_flush(0);
   // DCTL.RUN_STOP = 1 is run (dwc3_gadget_run_stop sets it when is_on). The
   // previous code cleared it immediately after setting it, which halts the core
   // and leaves D+ without a pull-up.
