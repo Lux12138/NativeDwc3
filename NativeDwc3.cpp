@@ -431,6 +431,7 @@ static bool femtoPhyInit(void)
 extern "C" int native_smmu_bypass(uint16_t stream, uint64_t dma, uint64_t bytes);
 
 static IOBufferMemoryDescriptor *g_evtDma;
+static OSSharedPtr<IOMemoryMap> g_evtKeep;
 static volatile uint32_t *g_evt;
 static uint64_t g_evtPhys;
 
@@ -450,9 +451,13 @@ static bool usbEventInit(void)
   }
   nabu_log_puts("usb:alloc-done\n");
   nabu_log_flush(0);
-  g_evt = reinterpret_cast<volatile uint32_t *>(g_evtDma->getBytesNoCopy());
   IOByteCount contiguous = 0;
   g_evtPhys = g_evtDma->getPhysicalSegment(0, &contiguous, kIOMemoryMapperNone);
+  // Read the ring through a mapping of the address the controller was given.
+  // getBytesNoCopy() returns a different page here: run 28 showed the core's
+  // events at 0xcaa47000 (0x301, 0x50301) while that virtual address read zero,
+  // which is why every previous poll looked empty.
+  g_evt = reinterpret_cast<volatile uint32_t *>(mapPhys(g_evtPhys, 4096, g_evtKeep));
   nabu_log_hex("usb:evtpa=", g_evtPhys);
   nabu_log_hex("usb:evtlen=", contiguous);
   if (g_evt == nullptr || g_evtPhys == 0 || (g_evtPhys & 4095) || contiguous < 4096) {
