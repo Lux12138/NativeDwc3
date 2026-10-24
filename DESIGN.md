@@ -616,3 +616,52 @@ S2CR 读回 3，不是 ARM 文档里的 bypass=2）。
 - 工具调用即使显示被拒绝，进程也可能已经启动并跑完（run23 因此真的刷了板子）。
   因此**不要发送任何包含 reboot/flash 的命令**，除非当场得到明确许可。
 - 板子停在 fastboot 超过超时时间会走正常启动并卡小米 logo。
+
+---
+
+# 2026-10-25 04:40 — run26..run33：事件环打通，PHY 模拟侧确认沉默
+
+## 两个决定性突破
+
+1. **事件环读错了内存**（run28）：`getBytesNoCopy()` 返回的虚拟地址和
+   `getPhysicalSegment()` 给出的物理地址不是同一块页。核心一直在正常写事件，
+   我们却一直读另一块。改成 `mapPhys(g_evtPhys)` 之后，run29 立刻读到
+   `ev0=0x301 / 0x50301 / 0x30301`（device event，devt=1 = DISCONNECT）。
+2. **S2CR 可以就地改成 bypass**（run27）：写 3→2 成功，没有分配新 context bank，
+   UFS 不受影响。这一步验证了"不抢 bank 也能让 USB 走直通"。
+
+## 核心侧现在全部正常
+
+    GCTL=0x2001 (DEVICE)          DCFG HS
+    DCTL.RUN_STOP=1               DSTS.LINKST=0 (U0)、CONNECTSPD=1
+    GEVNTADR/GEVNTSIZ 回读正确    事件环可读
+    S2CR bypass 生效              GFSR=0
+
+## 唯一剩下的问题：PHY 不上拉
+
+run30/31/32 三次交叉验证：
+
+    phy:term-pre/post = 0x01      TERMSEL 恒为 0（核心不驱动）
+    run32 我们强行写 TERMSEL=1    读回 0x21（写入有效）
+    → 但事件仍然是持续的 devt=1 (DISCONNECT)，主机没有发 reset
+
+结论：PHY 寄存器全部接受写入，但模拟侧没有任何电气反应。
+即 PHY 的模拟电源（vdda18/vdda33）或 PLL 没有真正工作。
+
+## SPMI 现状（run33 全表）
+
+v5 的 APID 表在 `0x900 + 4*apid`，每项 `ppid=(reg>>8)&0xFFF`。整表 256 项已 dump：
+
+- SID 2（PM8150B charger）只有 `0x201/0x204/0x205/0x206/0x209/0x21e/0x22c/...`，
+  **没有 `0x210`**（USBIN 所在的 0x10xx 区）→ 读不到 charger 的 VBUS 状态。
+- SID 0（PM8150）只有 `0x004/0x008/0x024/0x031/0x032/0x035/0x038/0x050/0x054/0x05b/0x05c/0x061`，
+  **没有 `0x042/0x044/0x04C`**（L2/L5/L12 所在的 LDO 区）→ 读不到 LDO 状态。
+- **`0x031` 存在** → SID 0 的 VADC（`0x3100`）对 AP 可见，这是唯一还能测电压的通道。
+
+## 下一步（按可行性排序）
+
+1. **用 VADC 读 PM8150 的电压**（纯软件，SID 0 / 0x3100，已确认可映射）：
+   配置通道、触发转换、读结果，确认 vdda33/vdda18 是否真的在。
+2. **万用表直接测 PHY 的 vdda33/vdda18 与 D+**（最快、最确定，但要拆/接触点）。
+3. 检查我们的 RPMh LDO 投票是否落在 active TCS（`RSC_DRV2_BASE=0x18220000`,
+   `TCS 0xd00`）而不是 sleep，避免"有回执但运行态不生效"。
