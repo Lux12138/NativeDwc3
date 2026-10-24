@@ -841,3 +841,35 @@ AP 侧软件现在能：确认 PMIC 看到 VBUS、能读写 PMIC 寄存器、能
 
 所以这条线需要硬件信息：PM8150B 与 PHY 之间 `vbusvldext` 的具体连接
 （原理图），或 XBL 里对它的初始化。软件侧已经走到尽头。
+
+# 2026-10-25 13:30 — extcon_usb1 的三个 GPIO 全部查清，PHY 端仍无来源
+
+## DT 里 vendor:extcon_usb1 的引脚
+
+    id-gpio       = <&tlmm 101 0>
+    vbus-gpio     = <&pm8150b_gpios 10 0>    输入，检测 VBUS
+    vbus-out-gpio = <&pm8150b_gpios 9 0>     输出，OTG 供电使能
+
+SPMI 里两者都有 APID（GPIO9 = 0x12C，GPIO10 = 0x12D），都已使能（`EN_CTL=0x80`）。
+PMIC GPIO 的 `MODE_CTL` 编码为 `{dir[6:4], func[3:1], value[0]}`：
+
+- GPIO10 `MODE_CTL = 1` → dir 0（输入）、value 1 → **VBUS 已检测到**；
+- GPIO9 原为输入；写成 `MODE_CTL = 0x11`（输出 + 高）后，**PHY 依然不认 VBUS**。
+
+`vbus-out-gpio` 在 `extcon-usb-gpio` 里的作用是把 5V 打到 VBUS 上（host/OTG 模式），
+并不是送给 PHY 的 VBUS-valid 信号，所以这条也不是。
+
+## 现在的完整图景
+
+AP 侧已经全部打通并且可以证明：
+
+    charger: USBIN_INT_RT_STS=0x10 (PLUGIN), APSD=CDP, GPIO10=1
+    DWC3:    DEVICE/HS, DSTS=U0, 事件环可读, S2CR bypass
+    SPMI:    读（obsrvr）+ 写（chnls）均可用
+
+唯一未知：**HS PHY 的 `vbusvldext` 引脚接到哪里**。设备树里没有它，
+PMIC 侧的三个 USB 引脚都已验证不是它，TLMM 里 `usb_phy`(gpio38)/`usb2phy_ac`(113/123)
+也不是。它是板级硬连线，只能从原理图确认。
+
+在此之前，软件侧的每一条路都走完了：内部比较器、外部选择、QSCRATCH 覆盖、
+PMIC GPIO9/10、TLMM 相关引脚。
