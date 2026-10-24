@@ -809,6 +809,17 @@ static int dwc3Bringup(void)
   nabu_log_hex("qs:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
   nabu_log_hex("phy:term2=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_flush(0);
+  // Force the PHY's own pull-up now that the core is already in U0. These are
+  // the registers drive_dp_pulse() toggles; holding them on (instead of pulsing)
+  // is the one combination never tried together with the VBUS override, the S2CR
+  // bypass and a readable event ring.
+  phyWrMask(FEMTO_CFG0, 3u, 3u);                  // CMN + DATAPATH override
+  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // XCVRSEL
+  nabu_log_hex("phy:term-force=", phyRd(FEMTO_UTMI_CTRL0));
+  nabu_log_hex("phy:xcvr-force=", phyRd(FEMTO_CTRL1));
+  nabu_log_flush(0);
   if (events) {
     // No long holds of any kind: every attempt to keep the link up longer
     // (IODelay, CNTPCT spin) has ended in a wedged boot. Just drain what the
