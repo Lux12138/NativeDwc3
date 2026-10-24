@@ -383,6 +383,9 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_COMMON0, 1u << 2, 0);           // SIDDQ = 0
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 0);        // POR = 0
   phyWrMask(FEMTO_CTRL2, 1u << 3, 0);             // SUSPEND_N_SEL = 0
+  // Keep the FS termination on: this is what actually presents the device on D+.
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL = 1
+  phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 1u << 0);  // XCVRSEL = 1
   phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0: msm_hsphy_set_suspend(0)
   phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // CMN override off
   // ---- keep the PHY powered on ------------------------------------------------
