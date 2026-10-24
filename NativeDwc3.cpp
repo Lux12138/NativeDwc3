@@ -259,12 +259,15 @@ static unsigned gccUsbPowerOn(void)
     }
   }
 
-  // AHB2PHY bridge reset: without it the femto PHY answers 0 on its AHB port.
+  // qcom BCRs do not self-clear: assert with 1, then write 0 to release.
+  // Leaving them at 1 keeps the PHY and the core in reset (reads return 0).
   gwr(GCC_USB_PHY_CFG_AHB2PHY_BCR, 0x1);
-  (void)waitMask(g_gcc + GCC_USB_PHY_CFG_AHB2PHY_BCR / 4, 0x1, 0, 100000);
-  // resets = <&gcc GCC_USB30_PRIM_BCR> in the glue node.
+  for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  gwr(GCC_USB_PHY_CFG_AHB2PHY_BCR, 0x0);
+  // resets = <&gcc GCC_USB30_PRIM_BCR> in the glue node: assert then release.
   gwr(GCC_USB30_PRIM_BCR, 0x1);
-  (void)waitMask(g_gcc + GCC_USB30_PRIM_BCR / 4, 0x1, 0, 100000);
+  for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  gwr(GCC_USB30_PRIM_BCR, 0x0);
   return failed;
 }
 
@@ -360,7 +363,8 @@ static int dwc3Bringup(void)
   // Release the QUSB2 PHY reset before the femto init, as qcom_snps_hsphy_init does.
   if (g_gcc != nullptr) {
     gwr(GCC_QUSB2PHY_PRIM_BCR, 0x1);
-    (void)waitMask(g_gcc + GCC_QUSB2PHY_PRIM_BCR / 4, 0x1, 0, 100000);
+    for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    gwr(GCC_QUSB2PHY_PRIM_BCR, 0x0);
   }
 
   nabu_log_hex("dwc3:bcr=", grd(GCC_USB30_PRIM_BCR));
