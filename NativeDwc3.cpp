@@ -271,8 +271,15 @@ static unsigned gccUsbPowerOn(void)
     return 0xfe;
   }
 
-  // usb_1 glue names GCC_USB3_SEC_CLKREF_CLK, not the PRIM one.
+  // The HS PHY's "ref_clk_src" is a USB3 clkref branch. Every other clock this
+  // controller uses is USB30_PRIM_*, so enabling only the SEC branch (as the
+  // earlier code did) left the PHY PLL without a reference. Drive both and log
+  // the halt bits: bit31 set means the branch is not running.
+  gwr(GCC_USB3_PRIM_CLKREF_CLK, grd(GCC_USB3_PRIM_CLKREF_CLK) | GCC_BRANCH_ENABLE_BIT);
   gwr(GCC_USB3_SEC_CLKREF_CLK, grd(GCC_USB3_SEC_CLKREF_CLK) | GCC_BRANCH_ENABLE_BIT);
+  for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  nabu_log_hex("gcc:refprim=", grd(GCC_USB3_PRIM_CLKREF_CLK));
+  nabu_log_hex("gcc:refsec=", grd(GCC_USB3_SEC_CLKREF_CLK));
 
   static const unsigned long branches[] = {
     GCC_USB30_PRIM_MASTER_CLK,
@@ -318,6 +325,19 @@ static unsigned gccUsbPowerOn(void)
 #define FEMTO_CTRL2 0x64
 #define FEMTO_CFG0 0x94
 #define FEMTO_REFCLK 0xa0
+// This board binds drivers/usb/phy/phy-msm-snps-hs.c ("msm-usb-hsphy"), not
+// qusb2: 0xb4 is RTUNE_SEL here, not a port-powerdown register.
+#define FEMTO_RTUNE_SEL 0xb4
+
+// QSCRATCH block inside the dwc3-mms wrapper (drivers/usb/dwc3/dwc3-msm.c).
+#define QSCRATCH_REG_OFFSET 0x000F8800UL
+#define QSCRATCH_GENERAL_CFG (QSCRATCH_REG_OFFSET + 0x08)
+#define QSCRATCH_HS_PHY_CTRL (QSCRATCH_REG_OFFSET + 0x10)
+#define QSCRATCH_CGCTL (QSCRATCH_REG_OFFSET + 0x28)
+#define QSCRATCH_PIPE_UTMI_CLK_SEL (1u << 0)
+#define QSCRATCH_PIPE3_PHYSTATUS_SW (1u << 3)
+#define QSCRATCH_PIPE_UTMI_CLK_DIS (1u << 8)
+#define QSCRATCH_UTMI_OTG_VBUS_VALID (1u << 20)
 
 static OSSharedPtr<IOMemoryMap> g_phyKeep;
 static volatile uint32_t *g_phy;
@@ -340,81 +360,60 @@ static bool femtoPhyInit(void)
     return false;
   }
   nabu_log_hex("phy:r0=", phyRd(0x0));
-  {
-    // Decisive: flip one COMMON0 bit and read it back. If the value does not change
-    // the AHB port is not really reaching the PHY.
-    uint32_t c0 = phyRd(FEMTO_COMMON0);
-    phyWr(FEMTO_COMMON0, c0 ^ 0x80u);
-    nabu_log_hex("phy:wtest=", phyRd(FEMTO_COMMON0));
-    phyWr(FEMTO_COMMON0, c0);
-  }
-  nabu_log_hex("phy:r4=", phyRd(0x4));
-  nabu_log_hex("phy:common2=", phyRd(FEMTO_COMMON2));
-  nabu_log_hex("phy:cfg0=", phyRd(FEMTO_CFG0));
-  // CFG0 reads 0 on a healthy but uninitialised femto PHY; COMMON2 (0x5c)
-  // returning 0xc1c1c1c1 is its reset value. Do not bail out here.
-  // QCOM's phy-msm-snps-hs reads the eFuse RCAL code first: when it is zero the PHY
-  // must use the internal resistor (RTUNE_SEL). mainline has neither, which is why
-  // the D+ pull-up never appeared.
-  {
-    OSSharedPtr<IOMemoryMap> rcalKeep;
-    volatile uint32_t *rcal =
-      reinterpret_cast<volatile uint32_t *>(mapPhys(0x007801F8ULL & ~0xFFFULL, 0x1000, rcalKeep));
-    uint32_t rcalCode = 0;
-    if (rcal != nullptr) {
-      rcalCode = rcal[(0x1F8 & 0xFFF) / 4];
-    }
-    nabu_log_hex("phy:rcal=", rcalCode);
-    if (rcalCode == 0) {
-      phyWrMask(0xb4, 1u << 0, 1u << 0);           // RTUNE_SEL
-    }
-  }
+  nabu_log_hex("phy:common0i=", phyRd(FEMTO_COMMON0));
+  nabu_log_hex("phy:common1i=", phyRd(FEMTO_COMMON1));
+  nabu_log_hex("phy:ctrl2i=", phyRd(FEMTO_CTRL2));
+
+  // msm_hsphy_init(), in the vendor driver's exact order.
   phyWrMask(FEMTO_CFG0, 1u << 1, 1u << 1);        // CMN_CTRL_OVERRIDE_EN
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 1u << 1);  // POR
   phyWrMask(FEMTO_COMMON0, 0x70, 0);              // FSEL = 0
   phyWrMask(FEMTO_COMMON1, 1u << 5, 1u << 5);     // PLLBTUNE
   phyWrMask(FEMTO_REFCLK, 0x3, 0x2);              // REFCLK_SEL_DEFAULT
-  // Internal VBUS detection: the external select waits for a PMIC signal XNU
-  // does not produce, so both selects are cleared and the PHY uses its own
-  // comparator against the 5 V that is really on the cable.
-  // VBUS is really present (TWRP: usb/online=1, 4.8 V); select the external
-  // PMIC-sourced detector and enable it.
-  phyWrMask(FEMTO_COMMON1, 1u << 4, 1u << 4);     // VBUSVLDEXTSEL0 = 1
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // VBUSVLDEXT0 = 1
+  phyWrMask(FEMTO_COMMON1, 1u << 4, 0);           // VBUSVLDEXTSEL0 = 0: PHY's own comparator
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 0);             // VBUSVLDEXT0 = 0
+
+  // qcom,param-override-seq = <4 0x70 0x2c 0x74>. hsusb_phy_write_seq writes
+  // seq[i] TO base + seq[i+1], so the pairs are 0x70 <- 0x04 and 0x74 <- 0x2c
+  // (the PARAMETER_OVERRIDE_X1/X2 registers), the opposite of the obvious read.
+  phyWr(0x70, 0x04);
+  phyWr(0x74, 0x2c);
+
+  {
+    // Use the external resistor only when the eFuse calibration is unprogrammed.
+    OSSharedPtr<IOMemoryMap> rcalKeep;
+    volatile uint32_t *rcal =
+      reinterpret_cast<volatile uint32_t *>(mapPhys(0x007801F8ULL & ~0xFFFULL, 0x1000, rcalKeep));
+    uint32_t rcalCode = 0;
+    if (rcal != nullptr) {
+      rcalCode = rcal[(0x1F8 & 0xFFF) / 4] & 0x01E00000u;
+    }
+    nabu_log_hex("phy:rcal=", rcalCode);
+    if (rcalCode == 0) {
+      phyWrMask(FEMTO_RTUNE_SEL, 1u << 0, 1u << 0);  // RTUNE_SEL
+    }
+  }
+
   phyWrMask(FEMTO_COMMON2, 1u << 0, 1u << 0);     // VREGBYPASS
   phyWrMask(FEMTO_CTRL2, (1u << 3) | (1u << 2), (1u << 3) | (1u << 2));
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 1u << 0);  // SLEEPM
-  phyWrMask(FEMTO_COMMON0, 1u << 2, 0);           // SIDDQ = 0
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 0);        // POR = 0
-  phyWrMask(FEMTO_CTRL2, 1u << 3, 0);             // SUSPEND_N_SEL = 0
-  // Keep the FS termination on: this is what actually presents the device on D+.
-  // Create a real attach edge: drop the D+ pull-up, then re-assert it.
-  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x08);        // OPMODE = NONDRIVING
-  for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
-  for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  phyWrMask(FEMTO_COMMON0, 1u << 3, 0);           // RETENABLEN = 0 (not retention)
-  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL = 1
-  phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 1u << 0);  // XCVRSEL = 1
-  phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0: msm_hsphy_set_suspend(0)
+  phyWrMask(FEMTO_CTRL2, 1u << 3, 0);             // SUSPEND_N_SEL = 0, SUSPEND_N stays 1
   phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // CMN override off
-  // QCOM's set_suspend(0) only enables clocks; SLEEPM stays 1 (the UTMI interface
-  // drives it) and OPMODE stays NORMAL from init. Do not add extra overrides here.
-  phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0 (bus resume)
-  for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  nabu_log_hex("phy:common0b=", phyRd(FEMTO_COMMON0));
-  nabu_log_hex("phy:common1b=", phyRd(FEMTO_COMMON1));
-  nabu_log_hex("phy:ctrl5b=", phyRd(FEMTO_UTMI_CTRL5));
-  nabu_log_hex("phy:refb=", phyRd(FEMTO_REFCLK));
-  nabu_log_hex("phy:ctrl0b=", phyRd(FEMTO_UTMI_CTRL0));
-  nabu_log_hex("phy:ctrl1b=", phyRd(FEMTO_UTMI_CTRL1));
-  nabu_log_hex("phy:common0b=", phyRd(FEMTO_COMMON0));
 
-  for (unsigned i = 0; i < 100000; ++i) {
-    __asm__ volatile("yield" ::: "memory");
-  }
-  nabu_log_hex("phy:cfg0b=", phyRd(FEMTO_CFG0));
-  nabu_log_hex("phy:common0=", phyRd(FEMTO_COMMON0));
+  for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  nabu_log_hex("phy:common0f=", phyRd(FEMTO_COMMON0));
+  nabu_log_hex("phy:common1f=", phyRd(FEMTO_COMMON1));
+  nabu_log_hex("phy:common2f=", phyRd(FEMTO_COMMON2));
+  nabu_log_hex("phy:ctrl0f=", phyRd(FEMTO_UTMI_CTRL0));
+  nabu_log_hex("phy:ctrl1f=", phyRd(FEMTO_CTRL1));
+  nabu_log_hex("phy:ctrl2f=", phyRd(FEMTO_CTRL2));
+  nabu_log_hex("phy:ctrl5f=", phyRd(FEMTO_UTMI_CTRL5));
+  nabu_log_hex("phy:cfg0f=", phyRd(FEMTO_CFG0));
+  nabu_log_hex("phy:ref=", phyRd(FEMTO_REFCLK));
+  nabu_log_hex("phy:x1=", phyRd(0x70));
+  nabu_log_hex("phy:x2=", phyRd(0x74));
+  nabu_log_hex("phy:rtune=", phyRd(FEMTO_RTUNE_SEL));
   nabu_log_puts("phy:init-done\n");
   return true;
 }
@@ -469,6 +468,9 @@ static bool usbEventInit(void)
   wr(DWC3_GEVTEN, 1);
   wr(DWC3_DEVTEN, 0xf); // disconnect, reset, connect-done, setup
   nabu_log_hex("usb:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
+  // A hang right after the ring is armed loses everything still in DRAM, so put
+  // the arm step on the medium before the risky part starts.
+  nabu_log_flush(0);
   return true;
 }
 
@@ -617,6 +619,15 @@ static int dwc3Bringup(void)
     return 1;
   }
 
+  // dwc3_msm_qscratch_reg_init: RAM/BAM clock master enable.
+  wr(QSCRATCH_CGCTL, rd(QSCRATCH_CGCTL) | 0x18);
+  // PIPE_UTMI_CLK_SEL|PIPE3_PHYSTATUS_SW is what dwc3-msm sets for an HS-only
+  // port, but with it the core wedged on the very next DCTL run (run 4). Until
+  // the PHY's 60 MHz UTMI clock is proven live, leave the wrapper's clock path
+  // at its default and isolate the VBUS override instead.
+  nabu_log_hex("qs:cg=", rd(QSCRATCH_CGCTL));
+  nabu_log_hex("qs:gen=", rd(QSCRATCH_GENERAL_CFG));
+
   const uint32_t gctl0 = rd(DWC3_GCTL);
   wr(DWC3_GCTL, gctl0 | DWC3_GCTL_CORESOFTRESET);
   (void)waitMask(g_regs + DWC3_GCTL / 4, DWC3_GCTL_CORESOFTRESET, DWC3_GCTL_CORESOFTRESET, 10000);
@@ -657,23 +668,59 @@ static int dwc3Bringup(void)
   nabu_log_hex("dwc3:g3ctl=", rd(DWC3_GUSB3PIPECTL(0)));
   wr(DWC3_GUSB3PIPECTL(0), rd(DWC3_GUSB3PIPECTL(0)) | (1u << 17));
   nabu_log_hex("dwc3:g3ctl2=", rd(DWC3_GUSB3PIPECTL(0)));
+  // core.h: DCFG_HIGHSPEED = (0 << 0), SUPERSPEED = (4 << 0). The DT's
+  // maximum-speed = "high-speed" is the reset default, so clearing the field is
+  // exactly right -- do not "fix" this to 1, that is FullSpeed.
   wr(DWC3_DCFG, rd(DWC3_DCFG) & ~0x7u);
   nabu_log_hex("dwc3:dcfg=", rd(DWC3_DCFG));
   const bool events = usbEventInit();
-  // Force a connect edge: stop, wait, then start with the event mask already open.
-  wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
-  for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  nabu_log_hex("dwc3:osts=", rd(DWC3_OSTS));
+  // DCTL.RUN_STOP = 1 is run (dwc3_gadget_run_stop sets it when is_on). The
+  // previous code cleared it immediately after setting it, which halts the core
+  // and leaves D+ without a pull-up.
   {
-    // KEEP_CONNECT holds the D+ pull-up without VBUS detection; this board
-    // detects VBUS through PMIC/extcon, which XNU has no driver for.
-    uint32_t dctl = rd(DWC3_DCTL) & ~DWC3_DCTL_RUN_STOP;
-    dctl |= DWC3_DCTL_KEEP_CONNECT;
+    uint32_t dctl = rd(DWC3_DCTL);
+    dctl |= DWC3_DCTL_RUN_STOP;
+    dctl &= ~DWC3_DCTL_HIRD_THRES(0x1fu);
+    dctl |= DWC3_DCTL_HIRD_THRES(0x10);          // DT: snps,hird-threshold = 0x10
+    nabu_log_hex("dwc3:dctl-pre=", dctl);
+    nabu_log_flush(0);
     wr(DWC3_DCTL, dctl);
-    nabu_log_hex("dwc3:dctl2=", rd(DWC3_DCTL));
+    nabu_log_hex("dwc3:dctl-post=", rd(DWC3_DCTL));
+    nabu_log_flush(0);
   }
+  {
+    uint32_t sts = rd(DWC3_DSTS);
+    unsigned ran = 0;
+    for (unsigned i = 0; i < 20000; ++i) {
+      sts = rd(DWC3_DSTS);
+      if (!(sts & DWC3_DSTS_DEVCTRLHLT)) { ran = 1; break; }
+      __asm__ volatile("yield" ::: "memory");
+    }
+    nabu_log_hex("dwc3:ran=", ran);
+    nabu_log_hex("dwc3:dsts-run=", sts);
+    nabu_log_hex("dwc3:osts=", rd(DWC3_OSTS));
+    nabu_log_flush(0);
+  }
+  // The QSCRATCH VBUS override (dwc3_override_vbus_status) wedged the AHB slave
+  // on this core both before and after RUN_STOP (runs 5 and 6), so it is not
+  // used: the PHY is left on its own VBUS comparator instead. If the board wires
+  // that pin to 5 V, OSTS.VBUSVLD turns 1 here and the core connects on its own.
+  nabu_log_hex("qs:hs=", rd(QSCRATCH_HS_PHY_CTRL));
+  nabu_log_hex("qs:osts=", rd(DWC3_OSTS));
+  nabu_log_flush(0);
+  for (unsigned i = 0; i < 400000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  nabu_log_hex("qs:dsts=", rd(DWC3_DSTS));
+  nabu_log_hex("qs:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
+  nabu_log_flush(0);
   if (events) {
     for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    usbPollEvents();
+    // The connect is asynchronous; take a second look before the log is written.
+    for (unsigned i = 0; i < 2000000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
+    nabu_log_hex("dwc3:dctl3=", rd(DWC3_DCTL));
+    nabu_log_hex("dwc3:osts2=", rd(DWC3_OSTS));
+    nabu_log_hex("dwc3:g2cfg2=", rd(DWC3_GUSB2PHYCFG(0)));
     usbPollEvents();
   }
   nabu_log_hex("dwc3:gctl2=", rd(DWC3_GCTL));

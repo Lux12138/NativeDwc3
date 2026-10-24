@@ -409,3 +409,113 @@ XNU 目前缺的就是这一段的 SPMI 读/配置。arbiter 已经在 V5 模式
 2. 确认 AP 的 EE（`qcom,ee`）与 PM8150 的 SID（通常 2），再读 `0x1010`。
 3. 若 VBUS=1 但 PHY 仍看不到，检查 PMIC 的 VBUS 输出是否被 XBL 关掉（可能需要写
    charger 的 `USBIN_CMD_IL`/`OTG_CMD` 使能检测）。
+
+---
+
+# 2026-10-25 02:00 — vendor 源码到手后的实测记录（run1..run6）
+
+## 决定性事实：绑定的驱动不是 qusb2
+
+TWRP 里 `ls -l /sys/bus/platform/devices/88e2000.hsphy/driver` 给出
+`msm-usb-hsphy`，即 `drivers/usb/phy/phy-msm-snps-hs.c`。在此之前我们按
+`phy-qcom-qusb2.c` 和另一套 femto 语义写寄存器，方向全错。
+
+源码：MiCode/Xiaomi_Kernel_OpenSource，分支 `nabu-r-oss`。
+
+## 真实寄存器表（phy-msm-snps-hs.c）
+
+    0x3c UTMI_CTRL0   OPMODE_MASK 0x18 / OPMODE_NONDRIVING 0x08 / SLEEPM bit0 / TERMSEL bit5
+    0x40 UTMI_CTRL1   XCVRSEL bit0
+    0x50 UTMI_CTRL5   POR bit1
+    0x54 COMMON0      RETENABLEN bit3 / FSEL_MASK 0x70
+    0x58 COMMON1      VBUSVLDEXTSEL0 bit4 / PLLBTUNE bit5
+    0x5c COMMON2      VREGBYPASS bit0
+    0x60 CTRL1        VBUSVLDEXT0 bit0
+    0x64 CTRL2        AUTO_RESUME bit0 / SUSPEND_N bit2 / SUSPEND_N_SEL bit3
+    0x94 CFG0         DATAPATH_OVERRIDE bit0 / CMN_CTRL_OVERRIDE bit1
+    0xa0 REFCLK_CTRL  REFCLK_SEL_DEFAULT = 0x2
+    0xb4 RTUNE_SEL    bit0
+    0x6c..0x78        PARAMETER_OVERRIDE_X0..X3
+
+注意 0x38/0xb4 在 qusb2 里分别是 PLL_STATUS 和 PORT_POWERDOWN，在本 PHY 上
+不是。0xb4 写 bit0 是打开外部电阻调谐，不是“上电”。
+
+## qcom,param-override-seq 的真实方向
+
+`hsusb_phy_write_seq()` 的实现是 `writel(seq[i], base + seq[i+1])`，即
+值写进第二个数指向的偏移。板子自己的 DT（从 TWRP 的
+/sys/firmware/devicetree/base 读出）是 `<4 0x70 0x2c 0x74>`，因此：
+`0x70 <- 0x04`、`0x74 <- 0x2c`。源码 DTS 里的默认值是 `<0x43 0x70>`。
+
+## 厂商 msm_hsphy_init() 顺序（照抄，顺序有意义）
+
+    CFG0 |= CMN_CTRL_OVERRIDE
+    CTRL5 |= POR
+    COMMON0 FSEL = 0
+    COMMON1 |= PLLBTUNE
+    REFCLK_CTRL = 0x2
+    COMMON1 |= VBUSVLDEXTSEL0
+    CTRL1   |= VBUSVLDEXT0
+    param_override_seq
+    rcal: (!rcal_code) -> 0xb4 RTUNE_SEL
+    COMMON2 |= VREGBYPASS
+    CTRL2   |= SUSPEND_N_SEL | SUSPEND_N
+    UTMI_CTRL0 |= SLEEPM
+    CTRL5 POR = 0
+    CTRL2 SUSPEND_N_SEL = 0     （SUSPEND_N 保持 1）
+    CFG0 &= ~CMN_CTRL_OVERRIDE
+
+PHY 参考时钟在 DTS 里是 `clocks = <&clock_rpmh RPMH_CXO_CLK>`，
+不是 GCC 的 usb3 clkref 分支；两个 clkref 分支开着也无害。
+
+## DWC3 语义修正
+
+- `DCTL.RUN_STOP` = 1 才是 run（Linux dwc3_gadget_run_stop 在 is_on 时置位）。
+  上一版先置 1 再清 0，核心一直 halted：`DSTS.DEVCTRLHLT(bit22)=1` 实测证实。
+- `DCFG.DEVSPD`：core.h 为 `HIGHSPEED (0 << 0)`、`SUPERSPEED (4 << 0)`。
+  清 0 就是 HS，不要“修正”成 1（那是 FullSpeed）。
+- `DSTS.USBLNKST = (v >> 18) & 0xf`，值 4 = SS.Disabled，是 HS 设备“未连接”的常态。
+
+## QSCRATCH（wrapper，偏移 0xF8800）
+
+    +0x08 GENERAL_CFG   PIPE_UTMI_CLK_SEL bit0 / PIPE3_PHYSTATUS_SW bit3 / PIPE_UTMI_CLK_DIS bit8
+    +0x10 HS_PHY_CTRL   UTMI_OTG_VBUS_VALID bit20 / SW_SESSVLD_SEL bit28
+    +0x28 CGCTL         置 0x18 打开 RAM 主时钟
+
+`dwc3_override_vbus_status()` 就是把 bit20 写成 VBUS 状态。本板上写这个位会
+把 AHB 从设备锁死：核心随后任何寄存器访问都不返回（run5 卡在 dctl-pre 之后、
+run6 卡在 qs:hs 之前，两次都需要长按电源键）。`PIPE_UTMI_CLK_DIS` 的“先关再开”
+同样会锁死（run3）。
+
+## 实测记录
+
+| run | 变化 | 结果 |
+|-----|------|------|
+| 1 | 旧版（RUN_STOP 先 1 后 0） | halt，evtcnt=0 |
+| 2 | RUN_STOP 保持 1 | ran=1，dsts=920001，osts=0，evtcnt=0 |
+| 3 | + QSCRATCH UTMI 时钟时序（含 CLK_DIS） | 锁死 |
+| 4 | + 厂商 PHY 序列 + VBUS 覆盖 + CLK_SEL/PHYSTATUS_SW | 锁死（qs:hs 之后） |
+| 5 | 去掉 CLK_SEL，只留 VBUS 覆盖 | 锁死在 DCTL 写（无 dctl-post） |
+| 6 | 先 RUN 再 VBUS 覆盖 | DCTL 成功、ran=1，随后写 VBUS 位即锁死 |
+
+run6 全程主机侧 `pnputil` 监视：只有 fastboot(18d1:d00d) 和 TWRP adb(18d1:d001)，
+没有任何第三个 USB 设备出现，说明 D+ 上拉从未拉起。
+
+## 电源已排除
+
+TWRP 正常态（Android 内核）：
+
+    pm8150_l5  enabled users=6  880000 uV   <- vdd
+    pm8150_l12 enabled users=2 1800000 uV   <- vdda18
+    pm8150_l2  enabled users=3 3072000 uV   <- vdda33
+    hsphy@88e2000 enabled users=1           <- PHY 自己提供的 dpdm regulator
+
+三者与我们 RPMh 投的 880/1800/3072 完全一致。`dpdm` regulator 的作用是把 PHY
+置于 non-driving（让 PMIC 做充电检测），不是我们必须补的东西。
+
+## 当前假设
+
+核心在 `RUN_STOP=1` 且 VBUS 有效时会立刻驱动 UTMI/PHY 进入连接流程；此时若 PHY
+没有真正工作在（没有 60 MHz UTMI 时钟），两侧互锁，表现为 AHB 挂死。因此下一步
+不再从 core 侧强推 VBUS，而是让 PHY 用自己的 VBUS 比较器
+（`VBUSVLDEXTSEL0=0`/`VBUSVLDEXT0=0`）自行判断，观察 `OSTS.VBUSVLD` 是否变 1。
