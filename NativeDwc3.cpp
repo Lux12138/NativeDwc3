@@ -200,6 +200,83 @@ static bool qusb2PhyInit(void)
   return false;
 }
 
+// ---- RPMh / cmd_db -------------------------------------------------------------
+// Reference: drivers/soc/qcom/cmd-db.c, rpmh-rsc.c, qcom-rpmh-regulator.c.
+// cmd_db is the aop_cmd_db reserved region (SM8150 DTS 0x85f20000);
+// the AP's RSC is drv-2 at 0x18220000 with TCS at +0xd00.
+#define CMD_DB_BASE 0x85F20000ULL
+#define CMD_DB_SIZE 0x20000ULL
+#define RSC_DRV2_BASE 0x18220000ULL
+#define RSC_DRV_SIZE 0x10000ULL
+#define RSC_TCS_OFFSET 0xd00
+
+static OSSharedPtr<IOMemoryMap> g_cmdKeep, g_rscKeep;
+static volatile uint8_t *g_cmd;
+static volatile uint32_t *g_rsc;
+
+static uint16_t cmdRd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t cmdRd32(const uint8_t *p)
+{
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint32_t rscRd(unsigned long off) { return g_rsc[off / 4]; }
+static void rscWr(unsigned long off, uint32_t v) { g_rsc[off / 4] = v; }
+
+static uint32_t rpmhCmdDbAddr(const char *name)
+{
+  static const uint8_t magic[4] = { 0xdb, 0x30, 0x03, 0x0c };
+  if (g_cmd == 0) {
+    return 0;
+  }
+  for (unsigned i = 0; i < 4; ++i) {
+    if (g_cmd[4 + i] != magic[i]) {
+      nabu_log_puts("rpmh:cmd-db-magic-bad\n");
+      return 0;
+    }
+  }
+  unsigned len = 0;
+  while (name[len] != 0 && len < 8) {
+    ++len;
+  }
+  for (unsigned r = 0; r < 8; ++r) {
+    const uint8_t *rh = const_cast<const uint8_t *>(g_cmd) + 8 + r * 16;
+    if (cmdRd16(rh + 0) == 0) {
+      break;
+    }
+    uint16_t hoff = cmdRd16(rh + 2), cnt = cmdRd16(rh + 6);
+    const uint8_t *ent = const_cast<const uint8_t *>(g_cmd) + 144 + hoff;
+    for (unsigned e = 0; e < cnt; ++e, ent += 24) {
+      bool match = true;
+      for (unsigned c = 0; c < 8 && match; ++c) {
+        uint8_t want = (c < len) ? static_cast<uint8_t>(name[c]) : 0;
+        if (ent[c] != want) {
+          match = false;
+        }
+      }
+      if (match) {
+        return cmdRd32(ent + 16);
+      }
+    }
+  }
+  return 0;
+}
+
+// Read-only: prove the table and the RSC are where the DTS says before any write.
+static void rpmhProbe(void)
+{
+  g_cmd = reinterpret_cast<volatile uint8_t *>(mapPhys(CMD_DB_BASE, CMD_DB_SIZE, g_cmdKeep));
+  g_rsc = reinterpret_cast<volatile uint32_t *>(mapPhys(RSC_DRV2_BASE, RSC_DRV_SIZE, g_rscKeep));
+  if (g_cmd == 0 || g_rsc == 0) {
+    nabu_log_puts("rpmh:map-bad\n");
+    return;
+  }
+  nabu_log_hex("rpmh:ldoa2=", rpmhCmdDbAddr("ldoa2"));
+  nabu_log_hex("rpmh:ldoa5=", rpmhCmdDbAddr("ldoa5"));
+  nabu_log_hex("rpmh:ldoa12=", rpmhCmdDbAddr("ldoa12"));
+  nabu_log_hex("rpmh:drvid=", rscRd(0));
+  nabu_log_hex("rpmh:config=", rscRd(0x4));
+}
+
 static int dwc3Bringup(void)
 {
   if (g_bringup_done) {
@@ -212,7 +289,7 @@ static int dwc3Bringup(void)
   /* Off by default: stage 0 works (GDSC on, all branch clocks running) but the
    * core still reads 0 because the 7nm HS PHY needs PMIC LDOs XNU does not drive
    * yet. Flip nabu-usb=1 once that exists. */
-  int enable = 0, init = 0;
+  int enable = 1, init = 0;
   (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
   (void)PE_parse_boot_argn("nabu-usb-init", &init, sizeof(init));
   if (!enable) {
@@ -221,6 +298,7 @@ static int dwc3Bringup(void)
     return 0;
   }
 
+  rpmhProbe();
   const unsigned failed = gccUsbPowerOn();
   if (!qusb2PhyInit()) {
     nabu_log_puts("dwc3:phy-bad\n");
