@@ -663,6 +663,14 @@ static int dwc3Bringup(void)
       for (unsigned a = 0; a < 16; ++a) {
         nabu_log_hex("spmi:mt=", spmi[(0x900 / 4) + a]);
       }
+      // The APID table can be up to 512 entries; the charger's APID may live past
+      // 256. Read a bounded slice and stop at the first unimplemented entry.
+      for (unsigned a = 256; a < 320; ++a) {
+        uint32_t ent = spmi[(0x900 / 4) + a];
+        if (ent == 0xffffffffu) { break; }
+        if (!ent) { continue; }
+        nabu_log_hex("spmi:tab2=", (a << 16) | ((ent >> 8) & 0xfffu));
+      }
       static const unsigned kSpmiRegs[] = { 0x1010, 0x1008, 0x1700, 0x1704 };
       for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
         const unsigned addr = kSpmiRegs[r];
