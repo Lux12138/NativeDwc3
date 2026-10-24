@@ -339,7 +339,7 @@ static int dwc3Bringup(void)
   g_bringup_done = 1;
   nabu_log_puts("dwc3:start\n");
 
-  int enable = 1, init = 0;
+  int enable = 1, init = 1;
   (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
   (void)PE_parse_boot_argn("nabu-usb-init", &init, sizeof(init));
   if (!enable) {
@@ -390,7 +390,8 @@ static int dwc3Bringup(void)
   const uint32_t sid = rd(DWC3_GSNPSID);
   nabu_log_hex("dwc3:sid=", sid);
   const uint32_t family = sid & DWC3_GSNPSID_MASK;
-  if (family != DWC3_GSNPSID_DWC_USB3 && family != DWC3_GSNPSID_DWC_USB31) {
+  if (family != DWC3_GSNPSID_DWC_USB3 && family != DWC3_GSNPSID_DWC_USB31 &&
+      family != DWC3_GSNPSID_DWC_USB31_3331) {
     nabu_log_puts("dwc3:id-bad\n");
     return -1;
   }
