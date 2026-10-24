@@ -199,6 +199,11 @@ static bool rpmhUsbPhyRails(void)
 {
   // USB core and PHY sit in the CX domain; without an active corner vote their
   // registers read 0 while GCC (always-on domain) works. Corner 3 = HIGH.
+  // The femto PHY clocks from RPMH_CXO_CLK (clk-rpmh: xo.lvl, on = 0x3).
+  // Without this vote the PHY AHB/PLL have no reference and read back 0.
+  const uint32_t xo = rpmhCmdDbAddr("xo.lvl");
+  nabu_log_hex("rpmh:xo=", xo);
+  if (xo != 0) { (void)rpmhWrite(xo, 0x3); }
   const uint32_t cx = rpmhCmdDbAddr("cx.lvl");
   nabu_log_hex("rpmh:cx=", cx);
   // MX (DDR) must not be voted from here: corner 5 reset the board on 2026-10-24.
