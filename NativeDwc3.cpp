@@ -755,8 +755,10 @@ static int dwc3Bringup(void)
       nabu_log_puts("tlmm:38-map-fail\n");
     } else {
       nabu_log_hex("tlmm:38old=", cfg[0]);
-      uint32_t v = (cfg[0] & ~0x7u) | 2u;   // func = usb_phy
+      uint32_t v = cfg[0] & ~0x7u;          // function 0 = plain GPIO
+      v |= (1u << 9);                        // TLMM_GPIO_OE: drive it
       cfg[0] = v;
+      cfg[1] = 1u;                           // output high = "VBUS valid"
       __asm__ volatile("dsb sy" ::: "memory");
       nabu_log_hex("tlmm:38new=", cfg[0]);
       nabu_log_hex("tlmm:38io=", cfg[1]);
