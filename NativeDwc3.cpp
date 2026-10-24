@@ -790,11 +790,11 @@ static int dwc3Bringup(void)
   nabu_log_hex("phy:term2=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_flush(0);
   if (events) {
-    // The host resets the port and asks for descriptors within milliseconds of
-    // the pull-up appearing. A yield loop only lasts a few ms, so hold the link
-    // with a real delay: ~40 s, polling the event ring every 20 ms.
-    for (unsigned round = 0; round < 2000; ++round) {
-      IODelay(20000);
+    // Deliberately a short yield loop, not IODelay: IODelay has no usable time
+    // base this early in boot and spins forever, which is what wedged run 23 at
+    // IOFindBSRoot. A few milliseconds of polling is all the event ring needs.
+    for (unsigned round = 0; round < 200; ++round) {
+      for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
       usbPollEvents();
     }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
