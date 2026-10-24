@@ -201,7 +201,10 @@ static bool rpmhUsbPhyRails(void)
   // registers read 0 while GCC (always-on domain) works. Corner 3 = HIGH.
   const uint32_t cx = rpmhCmdDbAddr("cx.lvl");
   nabu_log_hex("rpmh:cx=", cx);
-  if (cx != 0) { (void)rpmhWrite(cx, 3); }
+  const uint32_t mx = rpmhCmdDbAddr("mx.lvl");
+  nabu_log_hex("rpmh:mx=", mx);
+  if (mx != 0) { (void)rpmhWrite(mx, 5); }
+  if (cx != 0) { (void)rpmhWrite(cx, 5); }
   const uint32_t l2 = rpmhCmdDbAddr("ldoa2");
   const uint32_t l5 = rpmhCmdDbAddr("ldoa5");
   const uint32_t l12 = rpmhCmdDbAddr("ldoa12");
