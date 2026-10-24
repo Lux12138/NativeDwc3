@@ -201,9 +201,7 @@ static bool rpmhUsbPhyRails(void)
   // registers read 0 while GCC (always-on domain) works. Corner 3 = HIGH.
   const uint32_t cx = rpmhCmdDbAddr("cx.lvl");
   nabu_log_hex("rpmh:cx=", cx);
-  const uint32_t mx = rpmhCmdDbAddr("mx.lvl");
-  nabu_log_hex("rpmh:mx=", mx);
-  if (mx != 0) { (void)rpmhWrite(mx, 5); }
+  // MX (DDR) must not be voted from here: corner 5 reset the board on 2026-10-24.
   if (cx != 0) { (void)rpmhWrite(cx, 5); }
   const uint32_t l2 = rpmhCmdDbAddr("ldoa2");
   const uint32_t l5 = rpmhCmdDbAddr("ldoa5");
