@@ -97,4 +97,6 @@
 #define DWC3_GSNPSID_DWC_USB31_3331 0x33310000u
 #define DWC3_GSNPSREV_MASK       0x0000FFFFu
 
+#define DWC3_OSTS             0xCC10
+
 #endif // NABU_DWC3_REGS_H
