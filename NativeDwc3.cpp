@@ -671,7 +671,9 @@ static int dwc3Bringup(void)
         if (!ent) { continue; }
         nabu_log_hex("spmi:tab2=", (a << 16) | ((ent >> 8) & 0xfffu));
       }
-      static const unsigned kSpmiRegs[] = { 0x1010, 0x1008, 0x1700, 0x1704 };
+      static const unsigned kSpmiRegs[] = {
+        0x1000, 0x1004, 0x1008, 0x100c, 0x1010, 0x1014, 0x1018, 0x101c,
+      };
       for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
         const unsigned addr = kSpmiRegs[r];
         const unsigned ppid = (2u << 8) | ((addr >> 8) & 0xffu);  // PM8150B = sid 2
