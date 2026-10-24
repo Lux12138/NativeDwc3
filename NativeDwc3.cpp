@@ -398,6 +398,10 @@ static bool femtoPhyInit(void)
   // drives it) and OPMODE stays NORMAL from init. Do not add extra overrides here.
   phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0 (bus resume)
   for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  nabu_log_hex("phy:common0b=", phyRd(FEMTO_COMMON0));
+  nabu_log_hex("phy:common1b=", phyRd(FEMTO_COMMON1));
+  nabu_log_hex("phy:ctrl5b=", phyRd(FEMTO_UTMI_CTRL5));
+  nabu_log_hex("phy:refb=", phyRd(FEMTO_REFCLK));
   nabu_log_hex("phy:ctrl0b=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_hex("phy:ctrl1b=", phyRd(FEMTO_UTMI_CTRL1));
   nabu_log_hex("phy:common0b=", phyRd(FEMTO_COMMON0));
