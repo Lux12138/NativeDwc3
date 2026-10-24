@@ -458,7 +458,17 @@ static bool usbEventInit(void)
   for (unsigned i = 0; i < 1024; ++i) { g_evt[i] = 0; }
   nabu_log_puts("usb:smmu\n");
   nabu_log_flush(0);
-  (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
+  // The USB event ring needs its own SMMU stream mapping, but allocating a fresh
+  // context bank from inside NativeUfs::start can pick a bank UFS is about to
+  // use (the scan trusts whatever SMR/S2CR state survived a hard reset), which
+  // wedges UFS DMA: the kernel then sits in IOFindBSRoot with no panic and no
+  // reset. Default is off; enable with nabu-usb-smmu=1 once UFS is known clean.
+  int smmuMap = 0;
+  (void)PE_parse_boot_argn("nabu-usb-smmu", &smmuMap, sizeof(smmuMap));
+  nabu_log_hex("usb:smmu-en=", smmuMap);
+  if (smmuMap) {
+    (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
+  }
   nabu_log_puts("usb:smmu-done\n");
   nabu_log_flush(0);
 
@@ -572,7 +582,7 @@ static int dwc3Bringup(void)
         const unsigned addr = kSpmiRegs[r];
         const unsigned ppid = (2u << 8) | ((addr >> 8) & 0xffu);  // PM8150B = sid 2
         unsigned apid = 0xffffffffU;
-        for (unsigned a = 0; a < 512; ++a) {
+        for (unsigned a = 0; a < 128; ++a) {
           uint32_t ent = spmi[(0x900 / 4) + a];
           if (!ent) { continue; }
           if (((ent >> 8) & 0xfffu) == ppid) { apid = a; break; }
