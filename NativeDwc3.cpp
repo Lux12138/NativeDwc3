@@ -460,6 +460,10 @@ static bool usbEventInit(void)
     return false;
   }
   for (unsigned i = 0; i < 1024; ++i) { g_evt[i] = 0; }
+  // Sentinel: if the core really DMAs into this buffer its events will land on
+  // top of this word; if it survives, the ring is being written elsewhere.
+  g_evt[0] = 0xdeadbeefu;
+  nabu_log_hex("usb:sentinel=", g_evt[0]);
   nabu_log_puts("usb:smmu\n");
   nabu_log_flush(0);
   // The USB event ring needs its own SMMU stream mapping, but allocating a fresh
@@ -481,6 +485,8 @@ static bool usbEventInit(void)
       nabu_log_puts("smmu:map-fail\n");
     } else {
       nabu_log_hex("smmu:idr0=", smmu[0x20 / 4]);
+      // GFSR (0x48) latches global faults; CBn_FSR shows which context bank.
+      nabu_log_hex("smmu:gfsr=", smmu[0x48 / 4]);
       for (unsigned i = 0; i < 128; ++i) {
         uint32_t smr = smmu[(0x800 / 4) + i];
         if (!(smr & 0x80000000u)) { continue; }
@@ -801,6 +807,7 @@ static int dwc3Bringup(void)
       usbPollEvents();
     }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
+    nabu_log_hex("usb:sentinel2=", g_evt[0]);
     nabu_log_hex("dwc3:dctl3=", rd(DWC3_DCTL));
     nabu_log_hex("dwc3:osts2=", rd(DWC3_OSTS));
     nabu_log_hex("dwc3:g2cfg2=", rd(DWC3_GUSB2PHYCFG(0)));
