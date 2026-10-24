@@ -31,6 +31,7 @@ extern "C" void nabu_mark_num (const char *label, unsigned long v, unsigned int 
  * IOLog no longer reaches it once the console leaves printbuf. */
 extern "C" void nabu_log_puts(const char *s);
 extern "C" void nabu_log_hex(const char *label, unsigned long long value);
+extern "C" int nabu_log_flush(int is_panic);
 
 #define super IOService
 OSDefineMetaClassAndStructors(NativeDwc3, IOService)
@@ -378,6 +379,7 @@ static uint64_t g_evtPhys;
 static bool usbEventInit(void)
 {
   nabu_log_puts("usb:alloc\n");
+  nabu_log_flush(0);
   g_evtDma = IOBufferMemoryDescriptor::inTaskWithOptions(
     kernel_task,
     static_cast<IOOptionBits>(kIODirectionInOut) |
@@ -389,6 +391,7 @@ static bool usbEventInit(void)
     return false;
   }
   nabu_log_puts("usb:alloc-done\n");
+  nabu_log_flush(0);
   g_evt = reinterpret_cast<volatile uint32_t *>(g_evtDma->getBytesNoCopy());
   IOByteCount contiguous = 0;
   g_evtPhys = g_evtDma->getPhysicalSegment(0, &contiguous, kIOMemoryMapperNone);
@@ -399,9 +402,13 @@ static bool usbEventInit(void)
     return false;
   }
   for (unsigned i = 0; i < 1024; ++i) { g_evt[i] = 0; }
+  nabu_log_flush(0);
+  return true; // usb:stage1-only
   nabu_log_puts("usb:smmu\n");
+  nabu_log_flush(0);
   (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
   nabu_log_puts("usb:smmu-done\n");
+  nabu_log_flush(0);
 
   wr(DWC3_GEVNTADRLO(0), static_cast<uint32_t>(g_evtPhys));
   wr(DWC3_GEVNTADRHI(0), static_cast<uint32_t>(g_evtPhys >> 32));
