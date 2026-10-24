@@ -394,15 +394,9 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 1u << 0);  // XCVRSEL = 1
   phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0: msm_hsphy_set_suspend(0)
   phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // CMN override off
-  // ---- keep the PHY powered on ------------------------------------------------
-  // The block below was msm_hsphy_drive_dp_pulse(), not power_on: it clears the
-  // override and disables the clocks at the end, which shut the PHY down again.
-  // Power-on is: overrides ON, SLEEPM=0, OPMODE normal, SUSPEND_N=0, and leave them.
-  phyWrMask(FEMTO_CFG0, 1u << 1, 1u << 1);        // CMN_CTRL_OVERRIDE_EN
-  phyWrMask(FEMTO_CFG0, 1u << 0, 1u << 0);        // DATAPATH_CTRL_OVERRIDE_EN
-  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 0);        // SLEEPM = 0
-  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
-  phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0
+  // QCOM's set_suspend(0) only enables clocks; SLEEPM stays 1 (the UTMI interface
+  // drives it) and OPMODE stays NORMAL from init. Do not add extra overrides here.
+  phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0 (bus resume)
   for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
   nabu_log_hex("phy:ctrl0b=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_hex("phy:ctrl1b=", phyRd(FEMTO_UTMI_CTRL1));
