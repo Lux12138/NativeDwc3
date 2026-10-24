@@ -363,6 +363,10 @@ static int dwc3Bringup(void)
     (void)waitMask(g_gcc + GCC_QUSB2PHY_PRIM_BCR / 4, 0x1, 0, 100000);
   }
 
+  nabu_log_hex("dwc3:bcr=", grd(GCC_USB30_PRIM_BCR));
+  nabu_log_hex("dwc3:ahbbcr=", grd(GCC_USB_PHY_CFG_AHB2PHY_BCR));
+  nabu_log_hex("dwc3:gdscr2=", grd(GCC_USB30_PRIM_GDSCR));
+  nabu_log_hex("dwc3:phybcr=", grd(GCC_QUSB2PHY_PRIM_BCR));
   if (!femtoPhyInit()) {
     nabu_log_puts("dwc3:phy-bad\n");
   }
