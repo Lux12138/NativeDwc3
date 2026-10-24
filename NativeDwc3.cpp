@@ -747,20 +747,23 @@ static int dwc3Bringup(void)
   // func 1, which is why the PHY's VBUS side never sees the cable. Switch it
   // back to usb_phy before touching the PHY.
   {
-    OSSharedPtr<IOMemoryMap> tlmmKeep;
-    // TLMM is pinctrl@03000000 on this SoC, not 0x03D00000; GPIO 38's control
-    // register is at TLMM + 38 * 0x1000.
-    volatile uint32_t *cfg = reinterpret_cast<volatile uint32_t *>(
-      mapPhys(0x03026000ULL, 0x1000, tlmmKeep));
-    if (cfg == nullptr) {
-      nabu_log_puts("tlmm:38-map-fail\n");
-    } else {
-      nabu_log_hex("tlmm:38old=", cfg[0]);
-      uint32_t v = (cfg[0] & ~0x7u) | 2u;   // func 2 = usb_phy
-      cfg[0] = v;
-      __asm__ volatile("dsb sy" ::: "memory");
-      nabu_log_hex("tlmm:38new=", cfg[0]);
-      nabu_log_hex("tlmm:38io=", cfg[1]);
+    // TLMM is pinctrl@03000000. Read a known-configured pin (0) and the usb_phy
+    // pin (38) through their own pages, then try switching 38 to func 2.
+    static const unsigned kPins[] = { 0u, 1u, 38u };
+    for (unsigned i = 0; i < sizeof(kPins) / sizeof(kPins[0]); ++i) {
+      const unsigned g = kPins[i];
+      OSSharedPtr<IOMemoryMap> pinKeep;
+      volatile uint32_t *p = reinterpret_cast<volatile uint32_t *>(
+        mapPhys(0x03000000ULL + 0x1000ULL * g, 0x1000, pinKeep));
+      if (p == nullptr) { continue; }
+      nabu_log_hex("tlmm:cfg=", (g << 16) | (p[0] & 0xffffu));
+      nabu_log_hex("tlmm:io=", (g << 16) | (p[1] & 0x3u));
+      if (g == 38u) {
+        uint32_t v = (p[0] & ~0x7u) | 2u;      // usb_phy
+        p[0] = v;
+        __asm__ volatile("dsb sy" ::: "memory");
+        nabu_log_hex("tlmm:38set=", p[0]);
+      }
     }
   }
   if (g_phyInitMode) { (void)femtoPhyInit(); }
