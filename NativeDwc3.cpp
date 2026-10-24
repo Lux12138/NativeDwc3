@@ -98,12 +98,18 @@ static unsigned gccUsbPowerOn(void)
   // have left it valid and rewriting a live RCG can glitch the branch.
   const uint32_t cfg = grd(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG);
   nabu_log_hex("dwc3:rcgcfg=", cfg);
-  /* Never rewrite this: boot left MODE=1 (MND), and forcing DIV mode gave the
-   * core no clock at all (all registers read 0 on hardware 2026-10-24). */
+  /* Boot leaves MODE=1 (MND) with M/N/D = 0, i.e. no output at all: the core
+   * then reads back 0 from every register. Program DIV mode (200 MHz =
+   * GPLL0_OUT_MAIN/3) with the master branch halted first -- an RCG write while
+   * the branch runs is dropped. */
   nabu_log_hex("dwc3:rcgm=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + 0x8));
-  nabu_log_hex("dwc3:rcgn=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + 0xc));
-  nabu_log_hex("dwc3:rcgd=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + 0x10));
-  (void)cfg;
+  gwr(GCC_USB30_PRIM_MASTER_CLK, grd(GCC_USB30_PRIM_MASTER_CLK) & ~GCC_BRANCH_ENABLE_BIT);
+  (void)waitMask(g_gcc + GCC_USB30_PRIM_MASTER_CLK / 4, GCC_BRANCH_CLK_OFF, GCC_BRANCH_CLK_OFF, 100000);
+  const uint32_t want = (GCC_USB_MASTER_SRC_GPLL0_MAIN << 8) | (GCC_USB_MASTER_DIV_200MHZ << 16);
+  gwr(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG, want);
+  gwr(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CMD, GCC_USB_MASTER_SRC_GPLL0_MAIN | GCC_RCG2_CMD_UPDATE);
+  (void)waitMask(g_gcc + (GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CMD) / 4, GCC_RCG2_CMD_UPDATE, 0, 100000);
+  nabu_log_hex("dwc3:rcgcfg2=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG));
 
   static const unsigned long branches[] = {
     GCC_USB30_PRIM_MASTER_CLK,
