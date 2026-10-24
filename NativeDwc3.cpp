@@ -389,6 +389,7 @@ static bool femtoPhyInit(void)
   for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
   phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
   for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  phyWrMask(FEMTO_COMMON0, 1u << 3, 0);           // RETENABLEN = 0 (not retention)
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL = 1
   phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 1u << 0);  // XCVRSEL = 1
   phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0: msm_hsphy_set_suspend(0)
