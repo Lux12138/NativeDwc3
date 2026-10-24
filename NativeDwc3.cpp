@@ -370,8 +370,11 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_COMMON0, 0x70, 0);              // FSEL = 0
   phyWrMask(FEMTO_COMMON1, 1u << 5, 1u << 5);     // PLLBTUNE
   phyWrMask(FEMTO_REFCLK, 0x3, 0x2);              // REFCLK_SEL_DEFAULT
-  phyWrMask(FEMTO_COMMON1, 1u << 4, 1u << 4);     // VBUSVLDEXTSEL0
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // VBUSVLDEXT0
+  // Internal VBUS detection: the external select waits for a PMIC signal XNU
+  // does not produce, so both selects are cleared and the PHY uses its own
+  // comparator against the 5 V that is really on the cable.
+  phyWrMask(FEMTO_COMMON1, 1u << 4, 0);           // VBUSVLDEXTSEL0 = 0
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 0);             // VBUSVLDEXT0 = 0
   phyWrMask(FEMTO_COMMON2, 1u << 0, 1u << 0);     // VREGBYPASS
   phyWrMask(FEMTO_CTRL2, (1u << 3) | (1u << 2), (1u << 3) | (1u << 2));
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 1u << 0);  // SLEEPM
@@ -600,11 +603,6 @@ static int dwc3Bringup(void)
   // Force a connect edge: stop, wait, then start with the event mask already open.
   wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
   for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  // core sees no VBUS (OSTS.VBUSVLD=0) because VBUS detection lives behind PMIC/extcon.
-  // ULPIEXTVBUSDRV tells the core an external VBUS is present.
-  wr(DWC3_GUSB2PHYCFG(0), rd(DWC3_GUSB2PHYCFG(0)) | (1u << 17));
-  for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  nabu_log_hex("dwc3:g2vbus=", rd(DWC3_GUSB2PHYCFG(0)));
   nabu_log_hex("dwc3:osts=", rd(DWC3_OSTS));
   {
     // KEEP_CONNECT holds the D+ pull-up without VBUS detection; this board
