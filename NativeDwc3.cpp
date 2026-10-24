@@ -563,50 +563,48 @@ static int dwc3Bringup(void)
       nabu_log_puts("spmi:map-fail\n");
     } else {
       nabu_log_hex("spmi:ver=", spmi[0]);
-      // Dump the raw mapping table first: all zeroes means the arbiter's table
-      // was never programmed for this EE, and no walk order can fix that.
-      for (unsigned i = 0; i < 8; ++i) {
-        nabu_log_hex("spmi:mt=", spmi[(0xB00 / 4) + i]);
-      }
-      // Only addresses the board DT names: the charger's USBIN status at 0x1010
-      // and the PD PHY block at 0x1700 on PM8150B (sid 2). Wide APID sweeps
-      // wedged this board before, so this stays a fixed four-entry list.
+      // PMIC arbiter v5 (see drivers/spmi/spmi-pmic-arb.c): the APID table is
+      // one entry per APID at 0x900 + 4*apid, and each entry holds the PPID in
+      // bits[23:8]. This is NOT the v2 16-level tree at 0xB00 that the earlier
+      // code walked, which is why every lookup reported valid=0.
       static const unsigned kSpmiRegs[] = { 0x1010, 0x1008, 0x1700, 0x1704 };
-      for (unsigned sid = 2; sid <= 2; ++sid) {
-        for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
-          const unsigned addr = kSpmiRegs[r];
-          unsigned apid = 0, valid = 1;
-          const unsigned ppid = (sid << 8) | ((addr >> 8) & 0xffu);
-          for (unsigned i = 0; i < 16 && valid; ++i) {
-            uint32_t val = spmi[(0xB00 / 4) + i];
-            // pmic_arb_find_apid() walks the table LSB first: level i tests
-            // ppid bit i, not bit 15-i. Getting this backwards makes every
-            // lookup report valid=0.
-            if (ppid & (1u << i)) {
-              apid = (apid << 8) | (val & 0xffu);
-              valid = (val >> 8) & 1u;
-            } else {
-              apid = (apid << 8) | ((val >> 9) & 0xffu);
-              valid = (val >> 17) & 1u;
-            }
-          }
-          nabu_log_hex("spmi:ppid=", ppid);
-          nabu_log_hex("spmi:apid=", apid);
-          nabu_log_hex("spmi:valid=", valid);
-          if (!valid) {
-            continue;
-          }
-          const unsigned base = (0x80u * apid) / 4u;
-          spmi[base + 0] = (15u << 27) | ((addr & 0xffu) << 4);
-          unsigned done = 0;
-          for (unsigned i = 0; i < 20000; ++i) {
-            if (spmi[base + 2] & 1u) { done = 1; break; }
-            __asm__ volatile("yield" ::: "memory");
-          }
-          nabu_log_hex("spmi:done=", done);
-          if (done) {
-            nabu_log_hex("spmi:val=", spmi[base + 6] & 0xffu);
-          }
+      for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
+        const unsigned addr = kSpmiRegs[r];
+        const unsigned ppid = (2u << 8) | ((addr >> 8) & 0xffu);  // PM8150B = sid 2
+        unsigned apid = 0xffffffffU;
+        for (unsigned a = 0; a < 512; ++a) {
+          uint32_t ent = spmi[(0x900 / 4) + a];
+          if (!ent) { continue; }
+          if (((ent >> 8) & 0xfffu) == ppid) { apid = a; break; }
+        }
+        nabu_log_hex("spmi:ppid=", ppid);
+        nabu_log_hex("spmi:apid=", apid == 0xffffffffU ? 0xfffu : apid);
+        if (apid == 0xffffffffU) {
+          continue;
+        }
+        // v5 observer channel: 0x10000*ee + 0x80*apid. Map the containing page
+        // and offset into it, so an unaligned 0x80*apid still maps.
+        OSSharedPtr<IOMemoryMap> chanKeep;
+        const uint64_t chanPhys = 0x0C440000ULL + 0x80ULL * apid;
+        const uint64_t pagePhys = chanPhys & ~0xFFFULL;
+        volatile uint32_t *page = reinterpret_cast<volatile uint32_t *>(
+          mapPhys(pagePhys, 0x1000, chanKeep));
+        if (page == nullptr) {
+          nabu_log_puts("spmi:chan-fail\n");
+          continue;
+        }
+        volatile uint32_t *chan = page + (chanPhys - pagePhys) / 4;
+        // fmt_cmd: opcode<<27 | sid<<20 | addr<<4 | byte_count. The earlier code
+        // dropped the SID field, so every read went to sid 0.
+        chan[0] = (15u << 27) | ((2u & 0xfu) << 20) | ((addr & 0xffu) << 4);
+        unsigned done = 0;
+        for (unsigned i = 0; i < 20000; ++i) {
+          if (chan[2] & 1u) { done = 1; break; }
+          __asm__ volatile("yield" ::: "memory");
+        }
+        nabu_log_hex("spmi:done=", done);
+        if (done) {
+          nabu_log_hex("spmi:val=", chan[6] & 0xffu);
         }
       }
     }
