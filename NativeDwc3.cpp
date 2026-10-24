@@ -672,7 +672,8 @@ static int dwc3Bringup(void)
         nabu_log_hex("spmi:tab2=", (a << 16) | ((ent >> 8) & 0xfffu));
       }
       static const unsigned kSpmiRegs[] = {
-        0x1310, 0x1307, 0x1308, 0x1544,
+        0x1310, 0x1308, 0x1544,
+        0xC040, 0xC041, 0xC045, 0xC046,
       };
       for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
         const unsigned addr = kSpmiRegs[r];
