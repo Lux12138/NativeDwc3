@@ -440,15 +440,18 @@ static void femtoDpPulse(void)
   phyWrMask(FEMTO_CFG0, 3u, 3u);                  // CMN + DATAPATH override
   phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // XCVRSEL
+  phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 1u << 0);  // XCVRSEL lives at 0x40
   nabu_log_hex("phy:dp-pre=", phyRd(FEMTO_UTMI_CTRL0));
-  nabu_log_hex("phy:dp-xcvr=", phyRd(FEMTO_CTRL1));
+  nabu_log_hex("phy:dp-xcvr=", phyRd(FEMTO_UTMI_CTRL1));
   for (unsigned i = 0; i < 4000000; ++i) { __asm__ volatile("yield" ::: "memory"); }
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 0);        // TERMSEL off
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 0);             // XCVRSEL off
+  phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 0);        // XCVRSEL off
   phyWrMask(FEMTO_CFG0, 3u, 0);                   // both overrides off
   nabu_log_hex("phy:dp-post=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_hex("phy:dp-cfg=", phyRd(FEMTO_CFG0));
+  // 0x60 bit0 is VBUSVLDEXT0, not XCVRSEL: the pulse must leave it set.
+  nabu_log_hex("phy:dp-vbus=", phyRd(FEMTO_CTRL1));
+  nabu_log_hex("phy:dp-sel=", phyRd(FEMTO_COMMON1));
   nabu_log_flush(0);
 }
 
