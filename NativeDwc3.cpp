@@ -487,6 +487,14 @@ static bool usbEventInit(void)
       nabu_log_hex("smmu:idr0=", smmu[0x20 / 4]);
       // GFSR (0x48) latches global faults; CBn_FSR shows which context bank.
       nabu_log_hex("smmu:gfsr=", smmu[0x48 / 4]);
+      {
+        const unsigned pages = 1u << (((smmu[0x24 / 4] >> 28) & 7) + 1);
+        for (unsigned b = 0; b < 4; ++b) {
+          nabu_log_hex("smmu:cbar=", smmu[(0x1000 / 4) + b]);
+          nabu_log_hex("smmu:cba2r=", smmu[(0x1800 / 4) + b]);
+          nabu_log_hex("smmu:sctlr=", smmu[((pages + b) * 4096) / 4]);
+        }
+      }
       for (unsigned i = 0; i < 128; ++i) {
         uint32_t smr = smmu[(0x800 / 4) + i];
         if (!(smr & 0x80000000u)) { continue; }
