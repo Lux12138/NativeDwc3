@@ -136,3 +136,46 @@ Stage 3/4/5 后续分别落在 `Qusb2Phy.h`、`Dwc3Ep0.cpp`、`Dwc3LogEp.cpp`。
 - Android 的 `dwc3_qcom_interconnect_init`（NoC QoS）省略：本板 bootloader 已配好带宽。
 - Android 用 `dma_alloc_coherent`；这里用 `IOMallocContiguous` + 手工 `IODMACommand` 或物理地址。
 - Android 的 extcon/role switch 省略。
+
+## 硬件实测（2026-10-24）
+
+Stage 0 已跑通，读数来自内核 ring（`dwc3:*` 行）：
+
+| 读数 | 值 | 含义 |
+|---|---|---|
+| `gdscr` | `0xf8222000` | PWR_ON=1，SW_COLLAPSE=0，GDSC 已上电 |
+| `clkfail` | `0` | 8 路分支时钟 CLK_OFF 全部为 0 |
+| `rcgcfg` | `0x105` | SRC=GPLL0_OUT_MAIN，hid_div=5，即 200 MHz（字段在 bit0..7，不是 bit16） |
+| `rcgm/n/d` | `0` | MND 模式未被使用；不需要重配 RCG |
+| `cap/hcsp/gsbus/guid/sid` | `0` | core 全域读 0 |
+
+结论：GCC 侧（GDSC、clkref、分支时钟、`GCC_USB30_PRIM_BCR` 释放）已经正确，但 core 仍然完全不响应。
+
+## core 读 0 的根因：PHY 没有供电
+
+SM8150 的 USB HS PHY 不是 QUSB2，而是 **7nm femto PHY**：
+
+```
+usb_1_hsphy: phy@88e2000 {
+    compatible = "qcom,sm8150-usb-hs-phy", "qcom,usb-snps-hs-7nm-phy";
+    reg = <0 0x088e2000 0 0x400>;
+    clocks = <&rpmhcc RPMH_CXO_CLK>;
+    resets = <&gcc GCC_QUSB2PHY_PRIM_BCR>;
+};
+```
+
+对应驱动 `drivers/phy/qualcomm/phy-qcom-snps-femto-v2.c`，它需要三路 PMIC LDO：
+
+- `vdda-pll`（0.88 V，PLL）
+- `vdda33`（3.3 V）
+- `vdda18`（1.8 V）
+
+没有这些电源，PHY 寄存器读 0（实测 `phy-status=0`），DWC3 core 也就没有 UTMI/PIPE 时钟，所有寄存器读 0。
+
+XNU 当前没有 PMIC（SPMI/RPMh）驱动，所以 Stage 1 之前必须先补：
+
+1. PMIC LDO 上电（或确认 XBL 已经打开、且没有被 AP 关掉）；
+2. `RPMH_CXO_CLK` 到 PHY 的 ref clock；
+3. 然后才轮到 femto PHY 的 init sequence 与 PLL lock。
+
+在那之前，驱动默认 `nabu-usb=0`，不碰硬件。

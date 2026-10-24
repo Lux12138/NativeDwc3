@@ -209,9 +209,10 @@ static int dwc3Bringup(void)
   g_bringup_result = 0;
   nabu_log_puts("dwc3:start\n");
 
-  /* Default on: PE_parse_boot_argn returns false here for names added after boot
-   * (sheng-log behaved the same), so the boot-arg is only honoured to disable. */
-  int enable = 1, init = 0;
+  /* Off by default: stage 0 works (GDSC on, all branch clocks running) but the
+   * core still reads 0 because the 7nm HS PHY needs PMIC LDOs XNU does not drive
+   * yet. Flip nabu-usb=1 once that exists. */
+  int enable = 0, init = 0;
   (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
   (void)PE_parse_boot_argn("nabu-usb-init", &init, sizeof(init));
   if (!enable) {
