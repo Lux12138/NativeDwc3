@@ -1,12 +1,14 @@
 # NativeDwc3 设计（SM8150 / nabu）
 
-参考实现：Android/Linux `drivers/usb/dwc3/core.c`（控制器）、`drivers/usb/dwc3/dwc3-qcom.c`（QCOM glue：时钟、复位、PHY、SMMU）、`drivers/phy/qualcomm/phy-qcom-qusb2.c`（HS PHY）、`drivers/clk/qcom/gcc-sm8150.c`（时钟与 GDSC 偏移）。
+参考实现：Android/Linux `drivers/usb/dwc3/core.c`（控制器）、`drivers/usb/dwc3/dwc3-msm.c` 与 `dwc3-qcom.c`（QCOM glue：VBUS/角色/PHY 交接）、`drivers/usb/phy/phy-msm-snps-hs.c`（HS PHY，本板实际绑定的驱动）、`drivers/clk/qcom/gcc-sm8150.c`（时钟与 GDSC 偏移）。
+
+源码取自 MiCode/Xiaomi_Kernel_OpenSource 分支 `nabu-r-oss`（下称 vendor）。**注意：SM8150 的 HS PHY 不是 QUSB2**，`phy-qcom-qusb2.c` 的偏移在这块板上指向别的模块，早期按它写的表已作废。
 
 ## 目标与边界
 
 - 目标：在 XNU 下把 USB0 做成 device 模式，能枚举，最后提供一个 bulk IN 端点把内核日志推给主机（替代"卡在 panic 屏拍照"）。
 - 边界：本移植的 XNU **没有 USB 设备栈**（开源树里没有 `iokit/IOKit/usb/`），所以不能复用 IOUSBDevice/IOUSBInterface；驱动直接操作 DWC3 寄存器，自建 EP0 状态机和端点队列。
-- 不碰 UFS/RPMh/TCSR；不做 host 模式；不做 Type-C 角色切换（板子固定 device）。
+- 不碰 UFS、不动 TCSR；RPMh 只允许投 LDO（L5/L2/L12），**绝不投 MX/DDR 电源域**（会复位整板）；不做 host 模式；不做 Type-C 角色切换（板子固定 device）。
 
 ## 硬件事实（已核对）
 
@@ -24,11 +26,12 @@
 | phy_aux / com_aux / pipe | `0x0F050` / `0x0F054` / `0x0F058` | branches |
 | aggre / cfg_noc | `0x0F07C` / `0x0F078` | branches |
 | clkref | `0x8C008` | `gcc_usb3_prim_clkref_clk` |
-| QUSB2 PHY BCR | `0x12000` | `GCC_QUSB2PHY_PRIM_BCR` |
+| HS PHY 复位 | `0x12000` | GCC 里叫 `GCC_QUSB2PHY_PRIM_BCR`（名字是历史遗留） |
 | USB30_PRIM BCR | `0x0F000` | `GCC_USB30_PRIM_BCR` |
 | USB3 PHY BCR | `0x50000` / `0x50008` | `GCC_USB3_PHY_PRIM_BCR` / DP |
 | AHB2PHY BCR | `0x6A000` | `GCC_USB_PHY_CFG_AHB2PHY_BCR` |
-| QUSB2 PHY | `0x088E2000` | `hsphy@88e2000` |
+| HS PHY | `0x088E2000`，窗口 `0x110` | `hsphy@88e2000`，`qcom,usb-hsphy-snps-femto` |
+| PHY eFuse RCAL | `0x007801F8` | DT 第二个 `reg`；本板读到 `0x01e00000`（非 0） |
 
 分支时钟：写 enable 寄存器 bit0；`CLK_OFF` 是同一寄存器 bit31，置 0 表示在跑。
 GDSC：先清 `SW_COLLAPSE`，再轮询 `PWR_ON`（bit31）为 1。
@@ -42,46 +45,83 @@ GDSC：先清 `SW_COLLAPSE`，再轮询 `PWR_ON`（bit31）为 1。
 3. `clkref` 使能（17.2/19.2 MHz 给 PHY PLL）。
 4. 读 master RCG 的 CFG；不是 `GPLL0_OUT_MAIN/3` 才重写（避免对运行中的 RCG 抖动）。
 5. 依次使能 master/sleep/mock_utmi/phy_aux/phy_com_aux/phy_pipe/aggre/cfg_noc，统计未清 `CLK_OFF` 的条数。
-6. 释放 `GCC_QUSB2PHY_PRIM_BCR`。
+6. 复位 `GCC_QUSB2PHY_PRIM_BCR`：先写 1（assert），再显式写 **0**（deassert）。
+   qcom 的 BCR 不自清，只写 1 会让 PHY 一直挂在复位里。
 
 验收：屏幕 `dwc3:clkfail=0`。
 
 ### Stage 1 —— 只读识别 core
 
 1. map core 窗口（`0x0A600000`，`0xCD00`）。
-2. 读 `GSNPSID`，族必须是 `0x5533` 或 `0x5534`。
-3. 读 `GHWPARAMS0`，记录 FIFO/端点能力。
+2. 读 `GSNPSID`。本板是 **DWC_usb31**，实测 `0x33313130`（`DWC31_IP = 0x3331`）；`0x5533`/`0x5534`
+   是 `dwc3`（USB3 DRD）的族号，本板不会出现，不要把后者当成唯一合法值。
+3. 读 `GHWPARAMS0`，记录 FIFO/端点能力。本板实测 `0x4020400a`。
 
-验收：`dwc3:sid=5533xxxx`、`dwc3:stage1-done`。
-若 `sid=0/ffffffff`：时钟或 GDSC 没到位，或 PHY 复位仍asserted。
+验收：`dwc3:sid=33313130`、`dwc3:stage1-done`。
+若 `sid=0/ffffffff`：GDSC 或分支时钟没到位，或 `GCC_USB30_PRIM_BCR` 仍 asserted
+（qcom 的 BCR 不自清，必须显式写 0 才释放）。
 
 ### Stage 2 —— 控制器软复位与 device 模式（`nabu-usb-init=1`）
 
-严格按 `dwc3_core_init()`：
+前置：Stage 3 的 PHY 初始化要先跑完。PHY 不报 VBUS 有效时，核心不会 connect，`CURMOD` 也停在 0。
 
 1. `GCTL.CORESOFTRESET` 置 1，等它自清，再清 0，等自清。
-2. `GCTL.PRTCAPDIR=DEVICE`，清 `SCALEDOWN`，置 `DSBLCLKGTNG`。
-3. `GUSB2PHYCFG(0).SUSPHY=0`。
-4. `DCTL.RUN_STOP=1`。
-5. 读 `DSTS` 记录链路状态。
+2. 整体重写 `GCTL` 为 device：`PRTCAPDIR=DEVICE`、清 `SCALEDOWN`、置 `DSBLCLKGTNG`（实测读回 `0x2001`）。
+3. `GUSB2PHYCFG(0)`：`PHYSOFTRST` 脉冲一次，再清 `SUSPHY`。
+4. `DCFG.DEVSPD = 0` → HighSpeed。`1` 是 FullSpeed，`4` 是 SuperSpeed，不要"修正"成 1。
+5. `DCTL.CSFTRST` 脉冲；随后 **`DCTL.RUN_STOP=1`**（该位是低有效的 stop，置 1 才是 run）。
+6. 读 `DSTS`、`GSTS`、`OSTS`。
 
-验收：`dwc3:stage2-done`，`dsts` 的 `CONNECTSPD` 不再是 `0`（未接主机时为 0 属正常，接上主机后应变为 HS/SS）。
+验收：`DSTS.LINKST=0`（U0）、`DEVCTRLHLT=0`、`CONNECTSPD=1`；`OSTS.VBUSVLD=1`。
+`VBUSVLD` 为 0 时核心不会拉 D+ 上拉，主机侧永远看不到设备。
 
-### Stage 3 —— QUSB2 HS PHY 初始化
+### Stage 3 —— HS PHY 初始化（`qcom,usb-hsphy-snps-femto`）
 
-`phy-qcom-qusb2.c` 的 SM8150 布局（`qusb2_regs_layout` v2）：
+本板绑定的驱动是 vendor 的 `drivers/usb/phy/phy-msm-snps-hs.c`（sysfs 显示 `msm-usb-hsphy`），
+**不是** `phy-qcom-qusb2.c`。DT 窗口只有 `0x110`；`0x1A0`/`0x210`/`0x240` 这些 qusb2 偏移在本板
+落在窗口之外，读到的是别的模块。
 
-| 名称 | 偏移 |
-|---|---|
-| TUNE1..TUNE5 | `0x240..0x250` |
-| POWERDOWN | `0x210` |
-| PLL_STATUS | `0x1A0` |
-| INTR_CTRL | `0x230` |
+| 名称 | 偏移 | 位 |
+|---|---|---|
+| UTMI_CTRL0 | `0x3c` | OPMODE `0x18`（NORMAL=0）、SLEEPM bit0、TERMSEL bit5 |
+| UTMI_CTRL1 | `0x40` | XCVRSEL bit0 |
+| UTMI_CTRL5 | `0x50` | POR bit1 |
+| COMMON0 | `0x54` | RETENABLEN bit3、FSEL `0x70` |
+| COMMON1 | `0x58` | VBUSVLDEXTSEL0 bit4、PLLBTUNE bit5 |
+| COMMON2 | `0x5c` | VREGBYPASS bit0 |
+| CTRL1 | `0x60` | VBUSVLDEXT0 bit0 |
+| CTRL2 | `0x64` | AUTO_RESUME bit0、SUSPEND_N bit2、SUSPEND_N_SEL bit3 |
+| CFG0 | `0x94` | DATAPATH 覆盖 bit0、CMN 覆盖 bit1 |
+| REFCLK_CTRL | `0xa0` | REFCLK_SEL_DEFAULT = `0x2` |
+| RTUNE_SEL | `0xb4` | bit0（只在 eFuse RCAL 为 0 时才打开） |
+| PARAMETER_OVERRIDE_X0..X3 | `0x6c..0x78` | 由 DT `qcom,param-override-seq` 决定 |
 
-初始化表（沿用 Android 的 `qusb2_hstx_trim`/init sequence）：`PLL_ANALOG_CONTROLS_TWO=0x03`、`CLOCK_INVERTERS=0x7C`、`CMODE=0x80`、`LOCK_DELAY=0x0A`、`DIGITAL_TIMERS_TWO=0x19`、`BIAS_CTRL_1=0x40`、`BIAS_CTRL_2=0x20`、`PWR_CTRL2=0x21`、`IMP_CTRL1=0`、`IMP_CTRL2=0x58`、`TUNE1=0x30`、`TUNE2=0x29`（eFuse 可覆盖）、`TUNE3=0xCA`、`TUNE4=0x04`、`TUNE5=0x03`、`CHG_CTRL2=0`。
-最后清 `POWERDOWN` 的 PLL/偏置位，轮询 `PLL_STATUS` 的 lock 位。
+`msm_hsphy_init()` 的顺序（照抄，顺序有意义）：
 
-风险：TUNE2 的 eFuse 值必须读对，否则 HS 眼图闭合、枚举不稳。先用默认值。
+    CFG0 |= CMN_CTRL_OVERRIDE_EN
+    CTRL5 |= POR
+    COMMON0 FSEL = 0
+    COMMON1 |= PLLBTUNE
+    REFCLK_CTRL = 0x2
+    COMMON1 |= VBUSVLDEXTSEL0      <- 不依赖板级连线，见下
+    CTRL1   |= VBUSVLDEXT0
+    param_override_seq             （本板 DT：0x70<-0x04、0x74<-0x2c）
+    rcal == 0 ? RTUNE_SEL : 跳过     （本板 RCAL=0x01e00000，跳过）
+    COMMON2 |= VREGBYPASS
+    CTRL2   |= SUSPEND_N_SEL | SUSPEND_N
+    UTMI_CTRL0 |= SLEEPM
+    CTRL5 POR = 0
+    CTRL2 SUSPEND_N_SEL = 0        （SUSPEND_N 保持 1）
+    CFG0 &= ~CMN_CTRL_OVERRIDE_EN
+
+**VBUS 的来源是 PHY 内部的覆盖位，不是板级引脚**：`COMMON1.VBUSVLDEXTSEL0=1` 选择外部源，
+`CTRL1.VBUSVLDEXT0=1` 把该外部源的值直接驱动成 1。两位置 1 后 PHY 恒报 VBUS 有效，
+核心的 `OSTS.VBUSVLD` 随之置 1。任何后续步骤都**不能清 `CTRL1` bit0**。
+
+CDP 时 `dwc3-msm` 会先做一次 D+ 脉冲（`msm_hsphy_drive_dp_pulse()`），顺序是：
+`CFG0` 双覆盖 → `OPMODE=NORMAL` → `TERMSEL=1` → **`UTMI_CTRL1.XCVRSEL=1`** → 200 ms →
+`TERMSEL=0` → `XCVRSEL=0` → 清 `CFG0` 双覆盖。XCVRSEL 在 `0x40`，不在 `0x60`。
+
 
 ### Stage 4 —— EP0 枚举
 
@@ -102,31 +142,41 @@ GDSC：先清 `SW_COLLAPSE`，再轮询 `PWR_ON`（bit31）为 1。
 ## 风险与前置条件
 
 1. **时钟未开就写 core 会复位整板**（2026-10-24 实测）。所以 Stage 0 必须先过，Stage 2 必须由 boot-arg 显式打开。
-2. **SMMU**：DWC3 的 stream 0x140 需要 bypass 映射。复用 `NativeUfs::smmuBypassStream` 的 quirk（reserve last context bank，S2CR TYPE=TRANSLATE，CBNDX 指向它），只换 stream 号。
+2. **SMMU**：stream 0x140 由固件预先映射（实测 `SMR=0x80000140`、`S2CR=3`），直接用。
+   **绝不要**在 `NativeUfs::start` 里抢 context bank，也不要为 USB 新分配 bank —— 会破坏
+   UFS DMA，内核卡在 `IOFindBSRoot` 且不 panic（红色红线）。需要绕过时只在原地把
+   `S2CR` 改成 2（bypass），不碰 `CBNDX`。
 3. **DMA 地址**：可用区间从 `0xC8000000` 起；`0xF080F000` 曾触发复位。事件缓冲/TRB 用 `IOMallocContiguous` 并校验物理地址。
 4. **中断**：GIC SPI 133。XNU 侧需要 `IOInterruptController`/`IOInterruptSource` 绑定，或者在 Stage 4 先用轮询（`GEVNTCOUNT` 自旋），把中断留到最后。
 5. **XNU 无 USB 栈**：不能 `IOService::publish` 成 `IOUSBDevice`；先做成一个普通 IOService + 用户态不可见的字符通道。主机侧不依赖 macOS 的 USB 栈，用 libusb。
-6. **PHY 校准**：TUNE2 的 eFuse 值、IMP 校准。默认值能跑通枚举，但高速稳定性要实测。
-7. **角色/供电**：板子固定 device，VBUS 由主机提供；不要写 OTG 控制寄存器。
+6. **PHY 校准**：本板 eFuse RCAL 已烧写（`0x01e00000`），不需要 `RTUNE_SEL`。参数微调只走
+   DT 的 `qcom,param-override-seq`（板上实际值 `<4 0x70 0x2c 0x74>`，与源码默认不同）。
+7. **供电与 VBUS**：5 V 由主机提供；核心侧的 VBUS 有效信号来自 PHY 的两个覆盖位
+   （`COMMON1` bit4 + `CTRL1` bit0），与 PMIC 充电器状态无关。不要写 QSCRATCH
+   `HS_PHY_CTRL` bit20（会锁死 AHB），也不要写 OTG 控制寄存器。
 
 ## 代码结构
 
 ```
 NativeDwc3.h        IOService 子类
-NativeDwc3.cpp      Stage 0/1/2（本文件）
+NativeDwc3.cpp      全部实际代码：GCC/RPMh 上电、PHY、core、SMMU、事件环、EP0 缓冲
 GccUsb.h            SM8150 GCC USB 偏移（核对自 gcc-sm8150.c）
 Dwc3Registers.h     DWC3 寄存器与位域
 Info.plist          IOKit 匹配（provider 由 board.toml 注入）
 ```
 
-Stage 3/4/5 后续分别落在 `Qusb2Phy.h`、`Dwc3Ep0.cpp`、`Dwc3LogEp.cpp`。
+Stage 3 已并入 `NativeDwc3.cpp` 的 femto 段（`femtoPhyInit` / `femtoDpPulse`）；Stage 4/5
+（EP0 状态机、bulk IN 日志端点）尚未实现。
 
 ## 启动参数
 
 | 参数 | 默认 | 作用 |
 |---|---|---|
-| `nabu-usb` | 0 | 1 = 执行 Stage 0/1 |
-| `nabu-usb-init` | 0 | 1 = 追加 Stage 2（写 core） |
+| `nabu-usb` | 0 | 1 = 执行 Stage 0/1，并继续做 PHY 与 core 初始化 |
+| `nabu-usb-init` | 0 | 1 = 写 core（Stage 2） |
+| `nabu-usb-keep` | 0 | 1 = 保留 PHY 映射，不在退出时解除 |
+| `nabu-usb-smmu` | 0 | 1 = 动 stream 0x140 的 S2CR（默认不动，用固件映射） |
+| `nabu-usb-rails` | 0 | 1 = 投 RPMh LDO（L5/L2/L12）；本板实测投不投对结果无影响 |
 
 默认全关：驱动可以一直在内核里，板子照常启动。
 
@@ -832,6 +882,10 @@ PHY 的具体引脚**。下一步要么在 PM8150B 的 GPIO1 上做电平实验�
 
 ## 结论
 
+> **已被 2026-10-25 06:57 一节推翻。** 下面「PHY 的 VBUS 来自 PMIC 某个引脚」是错误前提：
+> vendor 的 `msm_hsphy_init()` 用 `COMMON1.VBUSVLDEXTSEL0=1` + `CTRL1.VBUSVLDEXT0=1`
+> 把值直接覆盖成 1，不需要任何板级连线，也不需要 PMIC 配合。
+
 AP 侧软件现在能：确认 PMIC 看到 VBUS、能读写 PMIC 寄存器、能让 DWC3 进 U0、
 能读事件环。**仍然做不到的一件事**：让 HS PHY 的 `VBUSVLDEXT` 有效。
 
@@ -842,7 +896,7 @@ AP 侧软件现在能：确认 PMIC 看到 VBUS、能读写 PMIC 寄存器、能
 所以这条线需要硬件信息：PM8150B 与 PHY 之间 `vbusvldext` 的具体连接
 （原理图），或 XBL 里对它的初始化。软件侧已经走到尽头。
 
-# 2026-10-25 13:30 — extcon_usb1 的三个 GPIO 全部查清，PHY 端仍无来源
+# 2026-10-25 13:30 — extcon_usb1 的三个 GPIO 全部查清，PHY 端仍无来源（“仍无来源”已作废，见文末 06:57 节）
 
 ## DT 里 vendor:extcon_usb1 的引脚
 
@@ -867,9 +921,50 @@ AP 侧已经全部打通并且可以证明：
     DWC3:    DEVICE/HS, DSTS=U0, 事件环可读, S2CR bypass
     SPMI:    读（obsrvr）+ 写（chnls）均可用
 
-唯一未知：**HS PHY 的 `vbusvldext` 引脚接到哪里**。设备树里没有它，
-PMIC 侧的三个 USB 引脚都已验证不是它，TLMM 里 `usb_phy`(gpio38)/`usb2phy_ac`(113/123)
+唯一未知（**已被 2026-10-25 06:57 一节推翻**）：**HS PHY 的 `vbusvldext` 引脚接到哪里**。
+设备树里没有它，PMIC 侧的三个 USB 引脚都已验证不是它，TLMM 里 `usb_phy`(gpio38)/`usb2phy_ac`(113/123)
 也不是。它是板级硬连线，只能从原理图确认。
 
 在此之前，软件侧的每一条路都走完了：内部比较器、外部选择、QSCRATCH 覆盖、
 PMIC GPIO9/10、TLMM 相关引脚。
+
+# 2026-10-25 06:57 — 推翻「PHY 缺 vbusvldext 引脚」：VBUS 由 PHY 内部覆盖位提供
+
+## vendor 源码（phy-msm-snps-hs.c，nabu-r-oss）
+
+`msm_hsphy_init()` 无条件执行下面两条：
+
+```c
+msm_usb_write_readback(phy->base, USB2_PHY_USB_PHY_HS_PHY_CTRL_COMMON1,
+                       VBUSVLDEXTSEL0, VBUSVLDEXTSEL0);   /* 0x58 bit4 = 1 */
+msm_usb_write_readback(phy->base, USB2_PHY_USB_PHY_HS_PHY_CTRL1,
+                       VBUSVLDEXT0, VBUSVLDEXT0);         /* 0x60 bit0 = 1 */
+```
+
+含义是：PHY 的 VBUS 比较器被软件旁路，送进核心的 VBUS-valid 直接固定为 1。
+所以板上不存在一条需要去找的「vbusvldext 板级连线」，前几轮对 PMIC GPIO 与 TLMM
+引脚的排查从一开始就是死胡同，那部分结论（含 13:30 一节）作废。
+
+## 我们的代码差在哪
+
+`femtoPhyInit()` 这两步与 vendor 一致（0x58 bit4、0x60 bit0 都写 1）。问题在紧接着的
+`femtoDpPulse()`：它把 **XCVRSEL 写到了 `FEMTO_CTRL1`（0x60）bit0**，而 vendor 里
+XCVRSEL 是 `UTMI_CTRL1`（0x40）bit0，0x60 bit0 正是 `VBUSVLDEXT0`。脉冲收尾那句
+「XCVRSEL off」因此实际清掉了 VBUS 覆盖位：
+
+    0x60 |= bit0    // 注释写的是 XCVRSEL，实际是 VBUSVLDEXT0 = 1
+    ... 脉冲 ...
+    0x60 &= ~bit0   // 注释写的是关 XCVRSEL，实际把 VBUS 覆盖关掉了
+
+最终状态 `COMMON1.VBUSVLDEXTSEL0=1`（选外部源）、`CTRL1.VBUSVLDEXT0=0`（外部源为 0）
+→ PHY 报 VBUS 无效 → `OSTS.VBUSVLD=0` → 核心不 connect，`GSTS.CURMOD` 停在 0。
+这与 00:00 那轮读到的「VBUSVLDEXT0/SEL0 = 0」在现象上吻合（当时 `femtoPhyInit`
+尚未写成完整 vendor 顺序）。
+
+## 下一步（一行改动 + 一次实测）
+
+1. `femtoDpPulse()` 的两处 XCVRSEL 改到 `FEMTO_UTMI_CTRL1`（0x40）bit0，0x60 bit0 不再触碰。
+2. 脉冲后再读 `0x58`/`0x60`，确认 bit4 与 bit0 都是 1（`phy:common1f`/`phy:ctrl1f` 已有）。
+3. 看 `OSTS.VBUSVLD` 与 `GSTS.CURMOD`：VBUSVLD=1 之后核心应自己切到 device 并拉 D+；
+   若仍为 0，才回到 PRTCAPDIR / ID 状态那条线。
+4. 若 VBUSVLD=1、CURMOD=2 但主机仍无枚举，再查 `DCTL.RUN_STOP` 与事件环的 CONNECT 事件。
