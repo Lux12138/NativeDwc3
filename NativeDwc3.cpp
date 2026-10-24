@@ -334,15 +334,16 @@ static int dwc3Bringup(void)
     return -1;
   }
 
-  if (!femtoPhyInit()) {
-    nabu_log_puts("dwc3:phy-bad\n");
-  }
-
-  // Release the QUSB2 PHY reset after the rails are up (glue node resets = ...).
+  // Release the QUSB2 PHY reset before the femto init, as qcom_snps_hsphy_init does.
   if (g_gcc != nullptr) {
     gwr(GCC_QUSB2PHY_PRIM_BCR, 0x1);
     (void)waitMask(g_gcc + GCC_QUSB2PHY_PRIM_BCR / 4, 0x1, 0, 100000);
   }
+
+  if (!femtoPhyInit()) {
+    nabu_log_puts("dwc3:phy-bad\n");
+  }
+
 
   const uintptr_t va = mapPhys(NABU_USB0_CORE_BASE, NABU_USB0_CORE_SIZE, g_keep);
   g_regs = reinterpret_cast<volatile uint32_t *>(va);
