@@ -814,6 +814,20 @@ static int dwc3Bringup(void)
       usbPollEvents();
     }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
+    nabu_log_hex("usb:va0=", g_evt[0]);
+    // Same words read through a fresh mapping of the physical address the core
+    // was given. If these differ, g_evt is not the memory the DMA targets.
+    {
+      OSSharedPtr<IOMemoryMap> paKeep;
+      volatile uint32_t *pa = reinterpret_cast<volatile uint32_t *>(
+        mapPhys(g_evtPhys, 0x1000, paKeep));
+      if (pa == nullptr) {
+        nabu_log_puts("usb:pa-map-fail\n");
+      } else {
+        nabu_log_hex("usb:pa0=", pa[0]);
+        nabu_log_hex("usb:pa4=", pa[1]);
+      }
+    }
     nabu_log_hex("dwc3:dctl3=", rd(DWC3_DCTL));
     nabu_log_hex("dwc3:osts2=", rd(DWC3_OSTS));
     nabu_log_hex("dwc3:g2cfg2=", rd(DWC3_GUSB2PHYCFG(0)));
