@@ -431,6 +431,7 @@ static int dwc3Bringup(void)
   }
   g_bringup_done = 1;
   nabu_log_puts("dwc3:start\n");
+  nabu_log_puts("usb:marker\n");
 
   int enable = 1, init = 1;
   (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
