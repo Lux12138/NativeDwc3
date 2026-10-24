@@ -332,6 +332,7 @@ static bool femtoPhyInit(void)
   nabu_log_hex("phy:r0=", phyRd(0x0));
   nabu_log_hex("phy:r4=", phyRd(0x4));
   nabu_log_hex("phy:r1a0=", phyRd(0x1a0));
+  nabu_log_hex("phy:r800=", phyRd(0x800));
   nabu_log_hex("phy:common2=", phyRd(FEMTO_COMMON2));
   nabu_log_hex("phy:cfg0=", phyRd(FEMTO_CFG0));
   if (phyRd(FEMTO_CFG0) == 0) {
@@ -401,6 +402,7 @@ static int dwc3Bringup(void)
 
   nabu_log_hex("dwc3:bcr=", grd(GCC_USB30_PRIM_BCR));
   nabu_log_hex("dwc3:ahbbcr=", grd(GCC_USB_PHY_CFG_AHB2PHY_BCR));
+  nabu_log_hex("dwc3:ahbclk=", grd(0x6a004));
   nabu_log_hex("dwc3:gdscr2=", grd(GCC_USB30_PRIM_GDSCR));
   nabu_log_hex("dwc3:phybcr=", grd(GCC_QUSB2PHY_PRIM_BCR));
   if (!femtoPhyInit()) {
