@@ -551,6 +551,8 @@ static int dwc3Bringup(void)
   // PRTCAPDIR read back as 1 (HOST) even after a read-modify-write, so write the
   // target value outright instead of preserving whatever the reset left.
   wr(DWC3_GCTL, DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_DEVICE) | DWC3_GCTL_DSBLCLKGTNG);
+  for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  nabu_log_hex("dwc3:gsts2=", rd(DWC3_GSTS));
 
   uint32_t p2 = rd(DWC3_GUSB2PHYCFG(0));
   p2 &= ~DWC3_GUSB2PHYCFG_SUSPHY;
