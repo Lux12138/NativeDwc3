@@ -423,6 +423,11 @@ static bool femtoPhyInit(void)
   nabu_log_hex("phy:x1=", phyRd(0x70));
   nabu_log_hex("phy:x2=", phyRd(0x74));
   nabu_log_hex("phy:rtune=", phyRd(FEMTO_RTUNE_SEL));
+  // PLL block (0x00..0x38) in full: the vendor driver never reads a lock bit,
+  // but if one exists it will be the bit that turns on after init.
+  for (unsigned off = 0; off <= 0x38; off += 4) {
+    nabu_log_hex("phy:pll=", (off << 16) | (phyRd(off) & 0xffu));
+  }
   nabu_log_puts("phy:init-done\n");
   return true;
 }
