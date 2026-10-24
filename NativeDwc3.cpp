@@ -142,217 +142,65 @@ static unsigned gccUsbPowerOn(void)
   return failed;
 }
 
-// ---- QUSB2 PHY (hsphy@88e2000) ------------------------------------------------
-// v2 register layout and init table from drivers/phy/qualcomm/phy-qcom-qusb2.c.
-// The DWC3 global registers only answer once this PHY supplies the UTMI clock;
-// before that every core read returns 0 (hardware 2026-10-24).
+// ---- 7nm femto HS PHY (hsphy@88e2000) -------------------------------------------
+// Register map and sequence from drivers/phy/qualcomm/phy-qcom-snps-femto-v2.c
+// (compatible "qcom,sm8150-usb-hs-phy"). QUSB2 offsets do not apply here.
 #define QUSB2_BASE 0x088E2000ULL
-#define QUSB2_PLL_STATUS 0x1a0
-#define QUSB2_PLL_LOCKED (1u << 5)
-#define QUSB2_PORT_POWERDOWN 0x210
-#define QUSB2_POWER_DOWN (1u << 0)
-#define QUSB2_CLAMP_N_EN (1u << 5)
+#define FEMTO_UTMI_CTRL0 0x3c
+#define FEMTO_UTMI_CTRL5 0x50
+#define FEMTO_COMMON0 0x54
+#define FEMTO_COMMON1 0x58
+#define FEMTO_COMMON2 0x5c
+#define FEMTO_CTRL1 0x60
+#define FEMTO_CTRL2 0x64
+#define FEMTO_CFG0 0x94
+#define FEMTO_REFCLK 0xa0
 
 static OSSharedPtr<IOMemoryMap> g_phyKeep;
 static volatile uint32_t *g_phy;
 
-static void phyWr(unsigned long off, uint32_t v) { g_phy[off / 4] = v; }
 static uint32_t phyRd(unsigned long off) { return g_phy[off / 4]; }
+static void phyWr(unsigned long off, uint32_t v) { g_phy[off / 4] = v; }
+static void phyWrMask(unsigned long off, uint32_t mask, uint32_t val)
+{
+  uint32_t v = phyRd(off);
+  phyWr(off, (v & ~mask) | (val & mask));
+}
 
-static bool qusb2PhyInit(void)
+static bool femtoPhyInit(void)
 {
   const uintptr_t va = mapPhys(QUSB2_BASE, 0x1000, g_phyKeep);
   g_phy = reinterpret_cast<volatile uint32_t *>(va);
   if (g_phy == nullptr) {
     return false;
   }
-  static const unsigned long tbl[][2] = {
-    { 0x004, 0x03 },  // PLL_ANALOG_CONTROLS_TWO
-    { 0x18c, 0x7c },  // PLL_CLOCK_INVERTERS
-    { 0x02c, 0x80 },  // PLL_CMODE
-    { 0x184, 0x0a },  // PLL_LOCK_DELAY
-    { 0x0b4, 0x19 },  // PLL_DIGITAL_TIMERS_TWO
-    { 0x194, 0x40 },  // PLL_BIAS_CONTROL_1
-    { 0x198, 0x20 },  // PLL_BIAS_CONTROL_2
-    { 0x214, 0x21 },  // PWR_CTRL2
-    { 0x220, 0x00 },  // IMP_CTRL1
-    { 0x224, 0x58 },  // IMP_CTRL2
-    { 0x240, 0x30 },  // TUNE1
-    { 0x244, 0x29 },  // TUNE2: eFuse trim; 0x29 is the v2 default
-    { 0x248, 0xca },  // TUNE3
-    { 0x24c, 0x04 },  // TUNE4
-    { 0x250, 0x03 },  // TUNE5
-    { 0x23c, 0x00 },  // CHG_CTRL2
-  };
-  for (unsigned i = 0; i < sizeof(tbl) / sizeof(tbl[0]); ++i) {
-    phyWr(tbl[i][0], static_cast<uint32_t>(tbl[i][1]));
-  }
-  uint32_t pd = phyRd(QUSB2_PORT_POWERDOWN);
-  phyWr(QUSB2_PORT_POWERDOWN, pd & ~(QUSB2_POWER_DOWN | QUSB2_CLAMP_N_EN));
-  for (unsigned i = 0; i < 1000000; ++i) {
-    if (phyRd(QUSB2_PLL_STATUS) & QUSB2_PLL_LOCKED) {
-      nabu_log_puts("dwc3:phy-lock\n");
-      return true;
-    }
-    __asm__ volatile("yield" ::: "memory");
-  }
-  nabu_log_hex("dwc3:phy-status=", phyRd(QUSB2_PLL_STATUS));
-  return false;
-}
-
-// ---- RPMh / cmd_db -------------------------------------------------------------
-// Reference: drivers/soc/qcom/cmd-db.c, rpmh-rsc.c, qcom-rpmh-regulator.c.
-// cmd_db is the aop_cmd_db reserved region (SM8150 DTS 0x85f20000);
-// the AP's RSC is drv-2 at 0x18220000 with TCS at +0xd00.
-#define CMD_DB_BASE 0x85F20000ULL
-#define CMD_DB_SIZE 0x20000ULL
-#define RSC_DRV2_BASE 0x18220000ULL
-#define RSC_DRV_SIZE 0x10000ULL
-#define RSC_TCS_OFFSET 0xd00
-#define RSC_TCS_SIZE 672
-#define RSC_TCS_CONTROL 0x14
-#define RSC_TCS_CMD_ENABLE 0x1c
-#define RSC_TCS_CMD_MSGID 0x30
-#define RSC_TCS_CMD_ADDR 0x34
-#define RSC_TCS_CMD_DATA 0x38
-#define RSC_TCS_CMD_STATUS 0x3c
-#define RSC_TCS_CMD_STEP 20
-
-static OSSharedPtr<IOMemoryMap> g_cmdKeep, g_rscKeep;
-static volatile uint8_t *g_cmd;
-static volatile uint32_t *g_rsc;
-
-static uint16_t cmdRd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
-static uint32_t cmdRd32(const uint8_t *p)
-{
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-static uint32_t rscRd(unsigned long off) { return g_rsc[off / 4]; }
-
-static uint32_t rpmhCmdDbAddr(const char *name)
-{
-  static const uint8_t magic[4] = { 0xdb, 0x30, 0x03, 0x0c };
-  if (g_cmd == 0) {
-    return 0;
-  }
-  for (unsigned i = 0; i < 4; ++i) {
-    if (g_cmd[4 + i] != magic[i]) {
-      nabu_log_puts("rpmh:cmd-db-magic-bad\n");
-      return 0;
-    }
-  }
-  unsigned len = 0;
-  while (name[len] != 0 && len < 8) {
-    ++len;
-  }
-  for (unsigned r = 0; r < 8; ++r) {
-    const uint8_t *rh = const_cast<const uint8_t *>(g_cmd) + 8 + r * 16;
-    if (cmdRd16(rh + 0) == 0) {
-      break;
-    }
-    uint16_t hoff = cmdRd16(rh + 2), cnt = cmdRd16(rh + 6);
-    const uint8_t *ent = const_cast<const uint8_t *>(g_cmd) + 144 + hoff;
-    for (unsigned e = 0; e < cnt; ++e, ent += 24) {
-      bool match = true;
-      for (unsigned c = 0; c < 8 && match; ++c) {
-        uint8_t want = (c < len) ? static_cast<uint8_t>(name[c]) : 0;
-        if (ent[c] != want) {
-          match = false;
-        }
-      }
-      if (match) {
-        return cmdRd32(ent + 16);
-      }
-    }
-  }
-  return 0;
-}
-
-// Read-only: prove the table and the RSC are where the DTS says before any write.
-static void rpmhProbe(void)
-{
-  g_cmd = reinterpret_cast<volatile uint8_t *>(mapPhys(CMD_DB_BASE, CMD_DB_SIZE, g_cmdKeep));
-  g_rsc = reinterpret_cast<volatile uint32_t *>(mapPhys(RSC_DRV2_BASE, RSC_DRV_SIZE, g_rscKeep));
-  if (g_cmd == 0 || g_rsc == 0) {
-    nabu_log_puts("rpmh:map-bad\n");
-    return;
-  }
-  nabu_log_hex("rpmh:ldoa2=", rpmhCmdDbAddr("ldoa2"));
-  nabu_log_hex("rpmh:ldoa5=", rpmhCmdDbAddr("ldoa5"));
-  nabu_log_hex("rpmh:ldoa12=", rpmhCmdDbAddr("ldoa12"));
-  nabu_log_hex("rpmh:drvid=", rscRd(0));
-  nabu_log_hex("rpmh:config=", rscRd(0x4));
-  nabu_log_hex("rpmh:tcs_ctrl=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CONTROL));
-  nabu_log_hex("rpmh:tcs_en=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_ENABLE));
-  nabu_log_hex("rpmh:tcs_stat=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_STATUS));
-  nabu_log_hex("rpmh:tcs_msgid=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_MSGID));
-  nabu_log_hex("rpmh:tcs_addr=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_ADDR));
-}
-
-// ---- RPMh write path ------------------------------------------------------------
-// v2.7 TCS layout (major = 1 < 3). One command per trigger, each waited for.
-#define TCS_AMC_ENABLE (1u << 16)
-#define TCS_AMC_TRIGGER (1u << 24)
-#define RPMH_MSGID_LEN 8u
-#define RPMH_MSGID_RESP (1u << 8)
-#define RPMH_MSGID_WRITE (1u << 16)
-#define RPMH_CMD_COMPL (1u << 16)
-
-static void rscWr(unsigned long off, uint32_t v) { g_rsc[off / 4] = v; }
-
-static bool rpmhWrite(uint32_t addr, uint32_t data)
-{
-  const unsigned long tcs = RSC_TCS_OFFSET; // active TCS 0
-  rscWr(tcs + RSC_TCS_CMD_MSGID, RPMH_MSGID_LEN | RPMH_MSGID_RESP | RPMH_MSGID_WRITE);
-  rscWr(tcs + RSC_TCS_CMD_ADDR, addr);
-  rscWr(tcs + RSC_TCS_CMD_DATA, data);
-  rscWr(tcs + RSC_TCS_CMD_ENABLE, 1);
-
-  uint32_t ctrl = rscRd(tcs + RSC_TCS_CONTROL);
-  ctrl &= ~TCS_AMC_TRIGGER;
-  rscWr(tcs + RSC_TCS_CONTROL, ctrl);
-  ctrl &= ~TCS_AMC_ENABLE;
-  rscWr(tcs + RSC_TCS_CONTROL, ctrl);
-  rscWr(tcs + RSC_TCS_CONTROL, ctrl | TCS_AMC_ENABLE);
-  rscWr(tcs + RSC_TCS_CONTROL, ctrl | TCS_AMC_ENABLE | TCS_AMC_TRIGGER);
-
-  for (unsigned i = 0; i < 1000000; ++i) {
-    if (rscRd(tcs + RSC_TCS_CMD_STATUS) & RPMH_CMD_COMPL) {
-      return true;
-    }
-    __asm__ volatile("yield" ::: "memory");
-  }
-  return false;
-}
-
-// Voltage register takes mV; mode 7 = PMIC5 LDO HPM; enable = 1.
-static bool rpmhSetLdo(uint32_t base, uint32_t mV)
-{
-  if (base == 0) {
+  nabu_log_hex("phy:cfg0=", phyRd(FEMTO_CFG0));
+  if (phyRd(FEMTO_CFG0) == 0) {
+    nabu_log_puts("phy:dead\n");
     return false;
   }
-  bool ok = rpmhWrite(base + 0x0, mV);
-  ok = rpmhWrite(base + 0x8, 7) && ok;
-  ok = rpmhWrite(base + 0x4, 1) && ok;
-  return ok;
-}
+  phyWrMask(FEMTO_CFG0, 1u << 1, 1u << 1);        // CMN_CTRL_OVERRIDE_EN
+  phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 1u << 1);  // POR
+  phyWrMask(FEMTO_COMMON0, 0x70, 0);              // FSEL = 0
+  phyWrMask(FEMTO_COMMON1, 1u << 5, 1u << 5);     // PLLBTUNE
+  phyWrMask(FEMTO_REFCLK, 0x3, 0x2);              // REFCLK_SEL_DEFAULT
+  phyWrMask(FEMTO_COMMON1, 1u << 4, 1u << 4);     // VBUSVLDEXTSEL0
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // VBUSVLDEXT0
+  phyWrMask(FEMTO_COMMON2, 1u << 0, 1u << 0);     // VREGBYPASS
+  phyWrMask(FEMTO_CTRL2, (1u << 3) | (1u << 2), (1u << 3) | (1u << 2));
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 1u << 0);  // SLEEPM
+  phyWrMask(FEMTO_COMMON0, 1u << 2, 0);           // SIDDQ = 0
+  phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 0);        // POR = 0
+  phyWrMask(FEMTO_CTRL2, 1u << 3, 0);             // SUSPEND_N_SEL = 0
+  phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // CMN override off
 
-static int g_rpmhWriteEnable = 1;
-
-static bool rpmhUsbPhyRails(void)
-{
-  const uint32_t l2 = rpmhCmdDbAddr("ldoa2");
-  const uint32_t l5 = rpmhCmdDbAddr("ldoa5");
-  const uint32_t l12 = rpmhCmdDbAddr("ldoa12");
-  nabu_log_hex("rpmh:l2=", l2);
-  nabu_log_hex("rpmh:l5=", l5);
-  nabu_log_hex("rpmh:l12=", l12);
-  bool ok = true;
-  ok = rpmhSetLdo(l5, 880) && ok;   // vdda-pll
-  ok = rpmhSetLdo(l2, 3072) && ok;  // vdda33
-  ok = rpmhSetLdo(l12, 1800) && ok; // vdda18
-  nabu_log_puts(ok ? "rpmh:rails-ok\n" : "rpmh:rails-fail\n");
-  return ok;
+  for (unsigned i = 0; i < 100000; ++i) {
+    __asm__ volatile("yield" ::: "memory");
+  }
+  nabu_log_hex("phy:cfg0b=", phyRd(FEMTO_CFG0));
+  nabu_log_hex("phy:common0=", phyRd(FEMTO_COMMON0));
+  nabu_log_puts("phy:init-done\n");
+  return true;
 }
 
 static int dwc3Bringup(void)
@@ -379,7 +227,7 @@ static int dwc3Bringup(void)
   rpmhProbe();
   if (g_rpmhWriteEnable) { (void)rpmhUsbPhyRails(); }
   const unsigned failed = gccUsbPowerOn();
-  if (!qusb2PhyInit()) {
+  if (!femtoPhyInit()) {
     nabu_log_puts("dwc3:phy-bad\n");
   }
   nabu_log_hex("dwc3:clkfail=", failed);
