@@ -180,6 +180,11 @@ static int dwc3Bringup(void)
     return -1;
   }
 
+  nabu_log_hex("dwc3:rcgcfg2=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG));
+  nabu_log_hex("dwc3:cap=", rd(0x0));
+  nabu_log_hex("dwc3:hcsp=", rd(0x4));
+  nabu_log_hex("dwc3:gsbus=", rd(DWC3_GSBUSCFG0));
+  nabu_log_hex("dwc3:guid=", rd(DWC3_GUID));
   const uint32_t sid = rd(DWC3_GSNPSID);
   nabu_log_hex("dwc3:sid=", sid);
   nabu_mark_num("dwc3:sid=", (unsigned long)sid, 2260);
