@@ -162,6 +162,27 @@ static bool rpmhWrite(uint32_t addr, uint32_t data)
   return false;
 }
 
+static bool rpmhRead(uint32_t addr, uint32_t *out)
+{
+  const unsigned long tcs = RSC_TCS_OFFSET;
+  rscWr(tcs + RSC_TCS_CMD_MSGID, RPMH_MSGID_LEN | RPMH_MSGID_RESP);
+  rscWr(tcs + RSC_TCS_CMD_ADDR, addr);
+  rscWr(tcs + RSC_TCS_CMD_ENABLE, 1);
+  uint32_t ctrl = rscRd(tcs + RSC_TCS_CONTROL);
+  ctrl &= ~TCS_AMC_TRIGGER; rscWr(tcs + RSC_TCS_CONTROL, ctrl);
+  ctrl &= ~TCS_AMC_ENABLE; rscWr(tcs + RSC_TCS_CONTROL, ctrl);
+  rscWr(tcs + RSC_TCS_CONTROL, ctrl | TCS_AMC_ENABLE);
+  rscWr(tcs + RSC_TCS_CONTROL, ctrl | TCS_AMC_ENABLE | TCS_AMC_TRIGGER);
+  for (unsigned i = 0; i < 1000000; ++i) {
+    if (rscRd(tcs + RSC_TCS_CMD_STATUS) & RPMH_CMD_COMPL) {
+      *out = rscRd(tcs + 0x40);
+      return true;
+    }
+    __asm__ volatile("yield" ::: "memory");
+  }
+  return false;
+}
+
 // Voltage register takes mV; mode 7 = PMIC5 LDO HPM; enable = 1.
 static bool rpmhSetLdo(uint32_t base, uint32_t mV)
 {
@@ -215,6 +236,10 @@ static bool rpmhUsbPhyRails(void)
   ok = rpmhSetLdo(l5, 880) && ok;   // vdda-pll
   ok = rpmhSetLdo(l2, 3072) && ok;  // vdda33
   ok = rpmhSetLdo(l12, 1800) && ok; // vdda18
+  uint32_t v = 0;
+  if (rpmhRead(l5 + 0x0, &v)) { nabu_log_hex("rpmh:l5v=", v); }
+  if (rpmhRead(l5 + 0x4, &v)) { nabu_log_hex("rpmh:l5e=", v); }
+  if (rpmhRead(l2 + 0x4, &v)) { nabu_log_hex("rpmh:l2e=", v); }
   nabu_log_puts(ok ? "rpmh:rails-ok\n" : "rpmh:rails-fail\n");
   return ok;
 }
