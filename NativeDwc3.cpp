@@ -220,7 +220,6 @@ static uint32_t cmdRd32(const uint8_t *p)
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 static uint32_t rscRd(unsigned long off) { return g_rsc[off / 4]; }
-static void rscWr(unsigned long off, uint32_t v) { g_rsc[off / 4] = v; }
 
 static uint32_t rpmhCmdDbAddr(const char *name)
 {
