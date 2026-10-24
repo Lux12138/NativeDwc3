@@ -214,6 +214,10 @@ static void rpmhProbe(void)
   nabu_log_hex("rpmh:tcs_ctrl=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CONTROL));
   nabu_log_hex("rpmh:tcs_en=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_ENABLE));
   nabu_log_hex("rpmh:tcs_stat=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_STATUS));
+  nabu_log_hex("rpmh:ldob1=", rpmhCmdDbAddr("ldob1"));
+  nabu_log_hex("rpmh:ldob2=", rpmhCmdDbAddr("ldob2"));
+  nabu_log_hex("rpmh:ldob3=", rpmhCmdDbAddr("ldob3"));
+  nabu_log_hex("rpmh:ldob4=", rpmhCmdDbAddr("ldob4"));
   nabu_log_hex("rpmh:chld=", rscRd(0x0c));
   // Linux writes the ACTIVE TCS mask here at probe (rpmh_probe_tcs_config tail).
   rscWr(RSC_TCS_OFFSET + 0x00, 0x3);
