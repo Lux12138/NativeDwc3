@@ -377,6 +377,7 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_COMMON0, 1u << 2, 0);           // SIDDQ = 0
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 0);        // POR = 0
   phyWrMask(FEMTO_CTRL2, 1u << 3, 0);             // SUSPEND_N_SEL = 0
+  phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0: msm_hsphy_set_suspend(0)
   phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // CMN override off
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 0);        // SLEEPM = 0: phy_power_on
   phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
