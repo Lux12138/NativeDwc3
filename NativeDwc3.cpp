@@ -685,7 +685,9 @@ static int dwc3Bringup(void)
           }
         }
         unsigned apid = 0xffffffffU;
-        for (unsigned a = 0; a < 256; ++a) {
+        // The charger's APID sits at 266 (PPID 0x210) and the PD PHY's at 273
+        // (0x217); the old 128-entry scan never reached them.
+        for (unsigned a = 0; a < 320; ++a) {
           uint32_t ent = spmi[(0x900 / 4) + a];
           if (!ent) { continue; }
           if (((ent >> 8) & 0xfffu) == ppid) { apid = a; break; }
