@@ -513,11 +513,9 @@ static int dwc3Bringup(void)
     return -1;
   }
 
-  uint32_t gctl = rd(DWC3_GCTL);
-  gctl &= ~DWC3_GCTL_SCALEDOWN(3);
-  gctl |= DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_DEVICE);
-  gctl |= DWC3_GCTL_DSBLCLKGTNG;
-  wr(DWC3_GCTL, gctl);
+  // PRTCAPDIR read back as 1 (HOST) even after a read-modify-write, so write the
+  // target value outright instead of preserving whatever the reset left.
+  wr(DWC3_GCTL, DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_DEVICE) | DWC3_GCTL_DSBLCLKGTNG);
 
   uint32_t p2 = rd(DWC3_GUSB2PHYCFG(0));
   p2 &= ~DWC3_GUSB2PHYCFG_SUSPHY;
