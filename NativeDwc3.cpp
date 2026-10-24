@@ -487,7 +487,19 @@ static bool usbEventInit(void)
         if (!(smr & 0x80000000u)) { continue; }
         if ((smr & 0xffffu) != 0x140u) { continue; }
         nabu_log_hex("smmu:sid140smr=", smr);
-        nabu_log_hex("smmu:sid140s2cr=", smmu[(0xc00 / 4) + i]);
+        {
+          // The event ring writes do not land in our buffer with the firmware's
+          // S2CR (reads back 3, not the ARM bypass value 2) and GFSR stays 0, so
+          // the address is being translated away. Flip ONLY this stream's TYPE
+          // to bypass; no context bank is allocated. UFS has its own slot.
+          const uint32_t old = smmu[(0xc00 / 4) + i];
+          nabu_log_hex("smmu:s2cr-old=", old);
+          if ((old & 3u) != 2u) {
+            smmu[(0xc00 / 4) + i] = (old & ~3u) | 2u;
+            __asm__ volatile("dsb sy" ::: "memory");
+          }
+          nabu_log_hex("smmu:s2cr-new=", smmu[(0xc00 / 4) + i]);
+        }
         break;
       }
     }
