@@ -746,26 +746,9 @@ static int dwc3Bringup(void)
   // SOUTH, usb_phy} and usb_phy is func 2). The bootloader hands it over on
   // func 1, which is why the PHY's VBUS side never sees the cable. Switch it
   // back to usb_phy before touching the PHY.
-  {
-    // TLMM is pinctrl@03000000. Read a known-configured pin (0) and the usb_phy
-    // pin (38) through their own pages, then try switching 38 to func 2.
-    static const unsigned kPins[] = { 0u, 1u, 38u };
-    for (unsigned i = 0; i < sizeof(kPins) / sizeof(kPins[0]); ++i) {
-      const unsigned g = kPins[i];
-      OSSharedPtr<IOMemoryMap> pinKeep;
-      volatile uint32_t *p = reinterpret_cast<volatile uint32_t *>(
-        mapPhys(0x03000000ULL + 0x1000ULL * g, 0x1000, pinKeep));
-      if (p == nullptr) { continue; }
-      nabu_log_hex("tlmm:cfg=", (g << 16) | (p[0] & 0xffffu));
-      nabu_log_hex("tlmm:io=", (g << 16) | (p[1] & 0x3u));
-      if (g == 38u) {
-        uint32_t v = (p[0] & ~0x7u) | 2u;      // usb_phy
-        p[0] = v;
-        __asm__ volatile("dsb sy" ::: "memory");
-        nabu_log_hex("tlmm:38set=", p[0]);
-      }
-    }
-  }
+  // No TLMM access here: writing GPIO 38 on a guessed address/function wedged the
+  // board, and reads of the TLMM window have not been proven safe either. The
+  // pin work needs the pinctrl register layout confirmed first.
   if (g_phyInitMode) { (void)femtoPhyInit(); }
   // No settle delay of any kind. Both CNTPCT and IODelay are unusable this early
   // (the counter does not advance yet, so the loop never ends) and each attempt
