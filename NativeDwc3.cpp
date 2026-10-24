@@ -305,6 +305,7 @@ static unsigned gccUsbPowerOn(void)
 // ---- 7nm femto HS PHY -----------------------------------------------------------
 #define QUSB2_BASE 0x088E2000ULL
 #define FEMTO_UTMI_CTRL0 0x3c
+#define FEMTO_UTMI_CTRL1 0x40
 #define FEMTO_UTMI_CTRL5 0x50
 #define FEMTO_COMMON0 0x54
 #define FEMTO_COMMON1 0x58
@@ -379,8 +380,23 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_CTRL2, 1u << 3, 0);             // SUSPEND_N_SEL = 0
   phyWrMask(FEMTO_CTRL2, 1u << 2, 0);             // SUSPEND_N = 0: msm_hsphy_set_suspend(0)
   phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // CMN override off
-  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 0);        // SLEEPM = 0: phy_power_on
+  // ---- msm_hsphy_power_on() ------------------------------------------------
+  // The PHY only builds the USB terminations (which is what pulls D+ up) when
+  // DATAPATH override is on and TERMSEL/XCVRSEL are pulsed.
+  phyWrMask(FEMTO_CFG0, 1u << 1, 1u << 1);        // CMN_CTRL_OVERRIDE_EN
+  phyWrMask(FEMTO_CFG0, 1u << 0, 1u << 0);        // DATAPATH_CTRL_OVERRIDE_EN
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 0);        // SLEEPM = 0
   phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL
+  phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 1u << 0);  // XCVRSEL
+  for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 0);        // clear TERMSEL
+  phyWrMask(FEMTO_UTMI_CTRL1, 1u << 0, 0);        // clear XCVRSEL
+  phyWrMask(FEMTO_CFG0, 1u << 0, 0);              // clear DATAPATH override
+  phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // clear CMN override
+  nabu_log_hex("phy:ctrl0b=", phyRd(FEMTO_UTMI_CTRL0));
+  nabu_log_hex("phy:ctrl1b=", phyRd(FEMTO_UTMI_CTRL1));
+  nabu_log_hex("phy:common0b=", phyRd(FEMTO_COMMON0))
 
   for (unsigned i = 0; i < 100000; ++i) {
     __asm__ volatile("yield" ::: "memory");
