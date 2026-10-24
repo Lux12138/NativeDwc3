@@ -209,6 +209,14 @@ static bool qusb2PhyInit(void)
 #define RSC_DRV2_BASE 0x18220000ULL
 #define RSC_DRV_SIZE 0x10000ULL
 #define RSC_TCS_OFFSET 0xd00
+#define RSC_TCS_SIZE 672
+#define RSC_TCS_CONTROL 0x14
+#define RSC_TCS_CMD_ENABLE 0x1c
+#define RSC_TCS_CMD_MSGID 0x30
+#define RSC_TCS_CMD_ADDR 0x34
+#define RSC_TCS_CMD_DATA 0x38
+#define RSC_TCS_CMD_STATUS 0x3c
+#define RSC_TCS_CMD_STEP 20
 
 static OSSharedPtr<IOMemoryMap> g_cmdKeep, g_rscKeep;
 static volatile uint8_t *g_cmd;
@@ -283,14 +291,6 @@ static void rpmhProbe(void)
 
 // ---- RPMh write path ------------------------------------------------------------
 // v2.7 TCS layout (major = 1 < 3). One command per trigger, each waited for.
-#define RSC_TCS_SIZE 672
-#define RSC_TCS_CONTROL 0x14
-#define RSC_TCS_CMD_ENABLE 0x1c
-#define RSC_TCS_CMD_MSGID 0x30
-#define RSC_TCS_CMD_ADDR 0x34
-#define RSC_TCS_CMD_DATA 0x38
-#define RSC_TCS_CMD_STATUS 0x3c
-#define RSC_TCS_CMD_STEP 20
 #define TCS_AMC_ENABLE (1u << 16)
 #define TCS_AMC_TRIGGER (1u << 24)
 #define RPMH_MSGID_LEN 8u
