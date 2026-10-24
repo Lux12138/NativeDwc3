@@ -536,6 +536,25 @@ static bool usbEventInit(void)
   return true;
 }
 
+// SPMI write through the v5 R/W channel window (chnls at 0x0C600000,
+// offset 0x10000*apid). Returns false on timeout or a denied/failed status.
+static bool spmiWrite(uint32_t apid, uint32_t addr, uint32_t val)
+{
+  OSSharedPtr<IOMemoryMap> keep;
+  volatile uint32_t *chn = reinterpret_cast<volatile uint32_t *>(
+    mapPhys(0x0C600000ULL + 0x10000ULL * apid, 0x1000, keep));
+  if (chn == nullptr) { return false; }
+  chn[0] = (14u << 27) | (2u << 20) | ((addr & 0xffu) << 4);   // WRITE, sid 2, 1 byte
+  chn[4] = val;
+  __asm__ volatile("dsb sy" ::: "memory");
+  for (unsigned i = 0; i < 20000; ++i) {
+    const uint32_t st = chn[2];
+    if (st & 1u) { return (st & 6u) == 0; }
+    __asm__ volatile("yield" ::: "memory");
+  }
+  return false;
+}
+
 static void usbPollEvents(void)
 {
   uint32_t count = rd(DWC3_GEVNTCOUNT(0));
@@ -673,7 +692,7 @@ static int dwc3Bringup(void)
       }
       static const unsigned kSpmiRegs[] = {
         0x1310, 0x1308, 0x1544,
-        0xC040, 0xC041, 0xC045, 0xC046,
+        0xC040, 0xC044, 0xC045, 0xC046,
       };
       for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
         const unsigned addr = kSpmiRegs[r];
@@ -725,6 +744,9 @@ static int dwc3Bringup(void)
           nabu_log_hex("spmi:val=", chan[6] & 0xffu);
         }
       }
+      // Probe: drive PM8150B GPIO1's software output high (DIG_OUT_SRC_CTL bit0)
+      // and see whether the PHY finally reports VBUS. APID 295 came from the table.
+      nabu_log_hex("spmi:gpio1w=", spmiWrite(0x127u, 0xC044u, 1u) ? 1u : 0u);
     }
   }
   // Bootloader already had these rails up for fastboot's own USB session, so
