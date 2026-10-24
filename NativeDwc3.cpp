@@ -98,13 +98,12 @@ static unsigned gccUsbPowerOn(void)
   // have left it valid and rewriting a live RCG can glitch the branch.
   const uint32_t cfg = grd(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG);
   nabu_log_hex("dwc3:rcgcfg=", cfg);
-  const uint32_t want = (GCC_USB_MASTER_SRC_GPLL0_MAIN << 8) | (GCC_USB_MASTER_DIV_200MHZ << 16);
-  if ((cfg & 0x001f0f00u) != want) {
-    gwr(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG, want);
-    gwr(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CMD,
-        GCC_USB_MASTER_SRC_GPLL0_MAIN | GCC_RCG2_CMD_UPDATE);
-    for (unsigned i = 0; i < 1000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-  }
+  /* Never rewrite this: boot left MODE=1 (MND), and forcing DIV mode gave the
+   * core no clock at all (all registers read 0 on hardware 2026-10-24). */
+  nabu_log_hex("dwc3:rcgm=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + 0x8));
+  nabu_log_hex("dwc3:rcgn=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + 0xc));
+  nabu_log_hex("dwc3:rcgd=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + 0x10));
+  (void)cfg;
 
   static const unsigned long branches[] = {
     GCC_USB30_PRIM_MASTER_CLK,
@@ -180,7 +179,6 @@ static int dwc3Bringup(void)
     return -1;
   }
 
-  nabu_log_hex("dwc3:rcgcfg2=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG));
   nabu_log_hex("dwc3:cap=", rd(0x0));
   nabu_log_hex("dwc3:hcsp=", rd(0x4));
   nabu_log_hex("dwc3:gsbus=", rd(DWC3_GSBUSCFG0));
