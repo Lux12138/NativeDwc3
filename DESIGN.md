@@ -771,3 +771,42 @@ run39-43 关于"GPIO 38 被切到 SOUTH 功能"的判断是错的，run41/43 的
 要继续，需要以下任一项：PM8150B 的原理图连接、XBL 里 `USB_CHG` 的处理代码，
 或一份能在 Android 下读 PMIC 寄存器的手段。在这之前，再刷这个板子只会得到同样的
 `U0 + devt=1(DISCONNECT) + 主机无设备`。
+
+# 2026-10-25 11:15 — SPMI 全部打通，PMIC 侧确认 VBUS 存在
+
+## SPMI 现在完全可用（关键突破）
+
+查阅 `drivers/spmi/spmi-pmic-arb.c` 与设备树后，三件事都搞清了：
+
+1. **AP = EE 0**（DT `qcom,ee = 0`）。
+2. 映射表在 `0x900 + 4*apid`，每项 `ppid = (reg >> 8) & 0xFFF`；
+   表最多 512 项，**charger 的 APID 在 266**，PD PHY 在 273，PMIC GPIO1 在 295。
+   之前只扫前 128/256 项，所以一直 `valid=0`。
+3. **读通道必须用 `obsrvr` 窗口**（DT：`core=0x0C440000`、`chnls=0x0C600000`、
+   `obsrvr=0x0E600000`、`intr=0x0E700000`、`cnfg=0x0C40A000`），
+   v5 观察通道偏移 `0x80*apid`。把该偏移加到 `core` 上会直接把板子挂死（run43）。
+
+现在 XNU 能读 PM8150B 的寄存器了。
+
+## PMIC 侧结论：VBUS 存在，是 CDP
+
+    USBIN_INT_RT_STS (0x1310) = 0x10   bit4 = USBIN_PLUGIN = 1
+    APSD_STATUS      (0x1307) = 0x01
+    APSD_RESULT      (0x1308) = 0x04   CDP
+    TYPE_C_MODE_CFG  (0x1544) = 0x02
+
+与 TWRP 里 Android 读到的状态完全一致（`usb/online=1`、APSD=CDP）。
+**USBIN 没有被挂起**（`USBIN_CMD_IL=0x40` 处 bit0 = 0）。
+
+## 仍然缺的一环
+
+PM8150B 知道线缆插着，但 SoC 的 HS PHY 不知道：
+`OSTS.VBUSVLD` 恒 0、PHY 的 `TERMSEL` 不出现、主机零枚举。
+
+PM8150B 的 GPIO1（`0xC000`，APID 295）是"使能的普通 GPIO 输出"
+（`EN_CTL=0x80`、`MODE_CTL=0`、`OUT_CTL=0x01`），**但它是不是 VBUS 有效信号无法确认**，
+而且 **GPIO2~12 在 SPMI 的 APID 表里没有映射**，AP 访问不到。
+
+也就是说：软件侧现在能确认"VBUS 在 PMIC 上存在"，但**没法确认/驱动那个把状态送进
+PHY 的具体引脚**。下一步要么在 PM8150B 的 GPIO1 上做电平实验（有把某个电源/复位
+脚改错的风险），要么拿到原理图确认 `vbusvldext` 的实际连接。
