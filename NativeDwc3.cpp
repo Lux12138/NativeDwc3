@@ -377,8 +377,7 @@ static uint64_t g_evtPhys;
 
 static bool usbEventInit(void)
 {
-  nabu_log_puts("usb:alloc
-");
+  nabu_log_puts("usb:alloc\n");
   g_evtDma = IOBufferMemoryDescriptor::inTaskWithOptions(
     kernel_task,
     static_cast<IOOptionBits>(kIODirectionInOut) |
@@ -389,8 +388,7 @@ static bool usbEventInit(void)
     nabu_log_puts("usb:dma-fail\n");
     return false;
   }
-  nabu_log_puts("usb:alloc-done
-");
+  nabu_log_puts("usb:alloc-done\n");
   g_evt = reinterpret_cast<volatile uint32_t *>(g_evtDma->getBytesNoCopy());
   IOByteCount contiguous = 0;
   g_evtPhys = g_evtDma->getPhysicalSegment(0, &contiguous, kIOMemoryMapperNone);
@@ -401,11 +399,9 @@ static bool usbEventInit(void)
     return false;
   }
   for (unsigned i = 0; i < 1024; ++i) { g_evt[i] = 0; }
-  nabu_log_puts("usb:smmu
-");
+  nabu_log_puts("usb:smmu\n");
   (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
-  nabu_log_puts("usb:smmu-done
-");
+  nabu_log_puts("usb:smmu-done\n");
 
   wr(DWC3_GEVNTADRLO(0), static_cast<uint32_t>(g_evtPhys));
   wr(DWC3_GEVNTADRHI(0), static_cast<uint32_t>(g_evtPhys >> 32));
