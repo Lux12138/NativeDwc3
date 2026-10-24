@@ -677,7 +677,15 @@ static int dwc3Bringup(void)
       }
     }
   }
-  (void)rpmhUsbPhyRails();
+  // Bootloader already had these rails up for fastboot's own USB session, so
+  // leave them exactly as it left them. Re-voting from here is the last thing
+  // that could have put the PHY supply in a strange state.
+  int voteRails = 0;
+  (void)PE_parse_boot_argn("nabu-usb-rails", &voteRails, sizeof(voteRails));
+  nabu_log_hex("rpmh:vote-rails=", voteRails);
+  if (voteRails) {
+    (void)rpmhUsbPhyRails();
+  }
   // RPMh completion means the RSC accepted the command, not that the PMIC
   // finished ramping. Give the rails time before the PHY AHB is touched.
   for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
