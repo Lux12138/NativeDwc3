@@ -19,6 +19,8 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOService.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
+#include <kern/task.h>
 #include <libkern/c++/OSSharedPtr.h>
 #include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
@@ -366,8 +368,6 @@ static bool femtoPhyInit(void)
 // The DWC3 event ring must be physically contiguous and reachable by the controller's
 // stream (0x140 on apps_smmu). The address floor is the same one UFS proved: buffers
 // below 0xC8000000 reset the board on the first command.
-#include <IOKit/IOBufferMemoryDescriptor.h>
-#include <kern/task.h>
 
 extern "C" int native_smmu_bypass(uint16_t stream, uint64_t dma, uint64_t bytes);
 
