@@ -625,11 +625,17 @@ static int dwc3Bringup(void)
       for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
         const unsigned addr = kSpmiRegs[r];
         const unsigned ppid = (2u << 8) | ((addr >> 8) & 0xffu);  // PM8150B = sid 2
+        // Dump every populated APID table entry once (0x900..0xCFF is the whole
+        // 0x400-byte table; going beyond it wedges the arbiter, run 20).
+        if (r == 0) {
+          for (unsigned a = 0; a < 256; ++a) {
+            uint32_t ent = spmi[(0x900 / 4) + a];
+            if (!ent) { continue; }
+            nabu_log_hex("spmi:tab=", (a << 16) | ((ent >> 8) & 0xfffu));
+          }
+        }
         unsigned apid = 0xffffffffU;
-        // The APID table is only 0x400 bytes (256 entries) from 0x900; reading
-        // past it hits unimplemented addresses and wedges the arbiter's AXI
-        // slave, which is what killed run 20.
-        for (unsigned a = 0; a < 128; ++a) {
+        for (unsigned a = 0; a < 256; ++a) {
           uint32_t ent = spmi[(0x900 / 4) + a];
           if (!ent) { continue; }
           if (((ent >> 8) & 0xfffu) == ppid) { apid = a; break; }
