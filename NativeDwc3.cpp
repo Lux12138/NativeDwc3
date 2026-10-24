@@ -501,7 +501,34 @@ static int dwc3Bringup(void)
       reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x1100, spmiKeep));
     if (spmi != nullptr) {
       nabu_log_hex("spmi:ver=", spmi[0]);
-      nabu_log_hex("spmi:int=", spmi[1]);
+      // V5 mapping: walk the 16-level table for (sid=2, addr=0x1010) = ppid 0x0210.
+      // PM8150 charger USBIN_INT_RT_STS lives at 0x1010.
+      unsigned apid = 0;
+      unsigned valid = 1;
+      for (unsigned i = 0; i < 16 && valid; ++i) {
+        uint32_t val = spmi[(0xB00 / 4) + i];
+        if (0x0210 & (1u << (15 - i))) {
+          apid = (apid << 1) | (val & 1u);
+          valid = (val >> 8) & 1u;
+        } else {
+          apid = (apid << 1) | ((val >> 9) & 1u);
+          valid = (val >> 17) & 1u;
+        }
+      }
+      nabu_log_hex("spmi:apid=", apid);
+      nabu_log_hex("spmi:valid=", valid);
+      if (valid) {
+        const unsigned base = (0x10000u * 0u + 0x80u * apid) / 4u; // EE 0, OBS channel
+        spmi[base + 0] = (15u << 27) | ((0x1010u & 0xffu) << 4);  // READ, 1 byte
+        unsigned done = 0;
+        for (unsigned i = 0; i < 100000; ++i) {
+          if (spmi[base + 2] & 1u) { done = 1; break; }
+          __asm__ volatile("yield" ::: "memory");
+        }
+        nabu_log_hex("spmi:done=", done);
+        nabu_log_hex("spmi:status=", spmi[base + 2]);
+        nabu_log_hex("spmi:vbus=", spmi[base + 6]);
+      }
     }
   }
   (void)rpmhUsbPhyRails();
