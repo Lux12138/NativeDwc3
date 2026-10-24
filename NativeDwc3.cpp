@@ -399,11 +399,7 @@ static bool femtoPhyInit(void)
     }
   }
 
-  // Vendor sets VREGBYPASS=1, i.e. the PHY expects 1.8 V on vdda18 and bypasses
-  // its own regulator. The analog side never responds here, so try the internal
-  // regulator instead: if vdda18 is the missing rail, this is what brings the
-  // D+ pull-up back.
-  phyWrMask(FEMTO_COMMON2, 1u << 0, 0);           // VREGBYPASS = 0
+  phyWrMask(FEMTO_COMMON2, 1u << 0, 1u << 0);     // VREGBYPASS (vendor value)
   phyWrMask(FEMTO_CTRL2, (1u << 3) | (1u << 2), (1u << 3) | (1u << 2));
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 1u << 0);  // SLEEPM
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 0);        // POR = 0
