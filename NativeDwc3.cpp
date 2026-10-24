@@ -600,6 +600,11 @@ static int dwc3Bringup(void)
   // Force a connect edge: stop, wait, then start with the event mask already open.
   wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
   for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  // core sees no VBUS (OSTS.VBUSVLD=0) because VBUS detection lives behind PMIC/extcon.
+  // ULPIEXTVBUSDRV tells the core an external VBUS is present.
+  wr(DWC3_GUSB2PHYCFG(0), rd(DWC3_GUSB2PHYCFG(0)) | (1u << 17));
+  for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  nabu_log_hex("dwc3:g2vbus=", rd(DWC3_GUSB2PHYCFG(0)));
   nabu_log_hex("dwc3:osts=", rd(DWC3_OSTS));
   {
     // KEEP_CONNECT holds the D+ pull-up without VBUS detection; this board
