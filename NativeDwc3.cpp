@@ -521,7 +521,8 @@ static int dwc3Bringup(void)
   p2 &= ~DWC3_GUSB2PHYCFG_SUSPHY;
   wr(DWC3_GUSB2PHYCFG(0), p2);
 
-  wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
+  // RUN_STOP is active-high: 1 stops the device controller. Linux clears it to run.
+  wr(DWC3_DCTL, rd(DWC3_DCTL) & ~DWC3_DCTL_RUN_STOP);
   if (usbEventInit()) {
     for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
     usbPollEvents();
