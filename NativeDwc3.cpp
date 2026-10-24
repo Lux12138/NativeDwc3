@@ -624,6 +624,24 @@ static int dwc3Bringup(void)
         nabu_log_hex("keep:reg=", (0xb4u << 16) | (p[0xb4 / 4] & 0xffu));
       }
     }
+    // TLMM: the PHY's vbusvldext pin is one of these. Dump config + level for
+    // the low GPIOs so we can see what the bootloader left driven high.
+    {
+      OSSharedPtr<IOMemoryMap> tKeep;
+      volatile uint32_t *t = reinterpret_cast<volatile uint32_t *>(
+        mapPhys(0x03D00000ULL, 0x60000, tKeep));
+      if (t == nullptr) {
+        nabu_log_puts("keep:tlmm-fail\n");
+      } else {
+        for (unsigned g = 0; g < 96; ++g) {
+          const uint32_t cfg = t[(g * 0x1000) / 4];
+          const uint32_t io = t[(g * 0x1000 + 4) / 4];
+          if (cfg == 0 && io == 0) { continue; }
+          nabu_log_hex("keep:gcfg=", (g << 16) | (cfg & 0xffffu));
+          nabu_log_hex("keep:gio=", (g << 16) | (io & 0x3u));
+        }
+      }
+    }
     nabu_log_flush(0);
     return 1;
   }
