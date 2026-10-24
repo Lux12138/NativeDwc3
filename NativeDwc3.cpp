@@ -686,22 +686,11 @@ static int dwc3Bringup(void)
   }
   g_phy = reinterpret_cast<volatile uint32_t *>(mapPhys(QUSB2_BASE, 0x1000, g_phyKeep));
   if (g_phyInitMode) { (void)femtoPhyInit(); }
-  // The vendor never starts the controller this soon after msm_hsphy_init():
-  // the PHY PLL needs time before its UTMI side can answer. Wait 20 ms on the
-  // ARM generic timer (short and bounded; the 40 s spin that wedged a boot is
-  // gone). Reading the counter needs no XNU time base.
-  {
-    uint64_t freq = 0;
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    if (freq == 0 || freq > 400000000ULL) { freq = 19200000ULL; }
-    uint64_t now = 0, start = 0;
-    __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(start));
-    const uint64_t until = start + freq / 50ULL;   // 20 ms
-    do {
-      __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(now));
-    } while (now < until);
-    nabu_log_hex("phy:delay=", static_cast<uint32_t>(now - start));
-  }
+  // No settle delay of any kind. Both CNTPCT and IODelay are unusable this early
+  // (the counter does not advance yet, so the loop never ends) and each attempt
+  // wedged the boot at IOFindBSRoot. Bounded yield loops only, never a wait on
+  // a clock that may not be running.
+  for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
 
 
   const uintptr_t va = mapPhys(NABU_USB0_CORE_BASE, NABU_USB0_CORE_SIZE, g_keep);
