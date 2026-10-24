@@ -49,6 +49,13 @@ inline void wr(unsigned long off, uint32_t v) { g_regs[off / 4] = v; }
 inline uint32_t grd(unsigned long off) { return g_gcc[off / 4]; }
 inline void gwr(unsigned long off, uint32_t v) { g_gcc[off / 4] = v; }
 
+static inline uint64_t nabuCnt(void)
+{
+  uint64_t v = 0;
+  __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(v));
+  return v;
+}
+
 static uintptr_t mapPhys(uint64_t phys, uint64_t length, OSSharedPtr<IOMemoryMap> &keep)
 {
   IODeviceMemory *memory = IODeviceMemory::withRange(phys, length);
@@ -790,11 +797,16 @@ static int dwc3Bringup(void)
   nabu_log_hex("phy:term2=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_flush(0);
   if (events) {
-    // Deliberately a short yield loop, not IODelay: IODelay has no usable time
-    // base this early in boot and spins forever, which is what wedged run 23 at
-    // IOFindBSRoot. A few milliseconds of polling is all the event ring needs.
-    for (unsigned round = 0; round < 200; ++round) {
-      for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    // Hold the link so the host has a long, steady window to react. This uses
+    // the ARM generic timer directly: IODelay/IOSleep need XNU's time base,
+    // which is not up this early, and spinning on it is what wedged run 23.
+    uint64_t freq = 0;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    if (freq == 0 || freq > 400000000ULL) { freq = 19200000ULL; }
+    const uint64_t deadline = nabuCnt() + freq * 40ULL;   // 40 s
+    while (nabuCnt() < deadline) {
+      const uint64_t slice = nabuCnt() + freq / 50ULL;    // poll every 20 ms
+      while (nabuCnt() < slice) { __asm__ volatile("yield" ::: "memory"); }
       usbPollEvents();
     }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
