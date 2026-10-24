@@ -810,3 +810,34 @@ PM8150B 的 GPIO1（`0xC000`，APID 295）是"使能的普通 GPIO 输出"
 也就是说：软件侧现在能确认"VBUS 在 PMIC 上存在"，但**没法确认/驱动那个把状态送进
 PHY 的具体引脚**。下一步要么在 PM8150B 的 GPIO1 上做电平实验（有把某个电源/复位
 脚改错的风险），要么拿到原理图确认 `vbusvldext` 的实际连接。
+
+# 2026-10-25 11:35 — SPMI 读+写全部打通；GPIO1 不是 VBUS 信号
+
+## 新获得的能力
+
+1. **SPMI 读**：`obsrvr` 窗口（`0x0E600000 + 0x80*apid`）。
+2. **SPMI 写**：`chnls` 窗口（`0x0C600000 + 0x10000*apid`），
+   命令字 `(14<<27)|(sid<<20)|(addr<<4)`，数据写 `WDATA0`（偏移 0x10），
+   状态 `DONE=bit0 / FAIL=bit1 / DENIED=bit2`。run49 的 `spmi:gpio1w=1`
+   证明写命令被 PMIC 接受。
+3. 可访问的 PMIC 目标：charger USBIN（APID 266）、PD PHY（273）、
+   PM8150B GPIO1（295）。
+
+## 已确认的硬件事实
+
+    USBIN_INT_RT_STS(0x1310) = 0x10   VBUS 插入
+    APSD_RESULT(0x1308)      = 0x04   CDP
+    TYPE_C_MODE_CFG(0x1544)  = 0x02
+    PM8150B GPIO1: MODE=0(普通GPIO), EN=0x80(使能), OUT_SRC=0 → 驱动为高后无任何变化
+
+## 结论
+
+AP 侧软件现在能：确认 PMIC 看到 VBUS、能读写 PMIC 寄存器、能让 DWC3 进 U0、
+能读事件环。**仍然做不到的一件事**：让 HS PHY 的 `VBUSVLDEXT` 有效。
+
+- PHY 用外部输入（`VBUSVLDEXTSEL0=1`），输入来自 PMIC 的某个引脚；
+- PMIC 的 GPIO2~12 在 SPMI APID 表里**没有映射**，AP 无法配置；
+- GPIO1 已证实不是该信号。
+
+所以这条线需要硬件信息：PM8150B 与 PHY 之间 `vbusvldext` 的具体连接
+（原理图），或 XBL 里对它的初始化。软件侧已经走到尽头。
