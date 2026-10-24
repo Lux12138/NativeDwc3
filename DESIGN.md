@@ -342,3 +342,39 @@ QCOM 的 `dwc3-msm.c` 不是在 probe 里写 PRTCAPDIR 就完事，它用 `id_st
 case DWC3_ID_GROUND:  dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_DEVICE); break;
 case DWC3_ID_FLOAT:   dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_HOST);   break;
 ```
+
+## 2026-10-24 23:50：最后一道门是 VBUS 检测
+
+把 `DWC3_DCTL` 的软复位、`GUSB2PHYCFG.PHYSOFTRST`、PHY 的完整 `power_on`（DATAPATH override、
+TERMSEL、XCVRSEL）都补齐之后：
+
+```
+OSTS  = 0        VBUSVLD = 0   ← core 认为没有 VBUS
+DCTL  = 0x00f00000            KEEP_CONNECT(bit19) 写不进去（只读）
+GUSB2PHYCFG |= ULPIEXTVBUSDRV(bit17)   写了，OSTS 仍 0（UTMI 模式忽略该位）
+GSTS.CURMOD = 0               因为不认为有 VBUS，也就没有进入 device
+```
+
+DWC3 在 device 模式下必须看到 VBUS 才 connect（D+ 上拉）。这块板的 VBUS 检测链路是：
+
+```
+USB VBUS -> PM8150 充电器 (SPMI) -> extcon -> dwc3-msm 的 msm_dwc3_vbus()
+                                             -> 清 DCTL.RUN_STOP -> connect
+```
+
+XNU 没有 SPMI/充电器驱动，所以这条链断了。软件侧的替代都被硬件拒绝：
+
+- `DCTL.KEEP_CONNECT`：只读
+- `GUSB2PHYCFG.ULPIEXTVBUSDRV`：只对 ULPI 接口有效，本板是 UTMI
+- `GSTS/OSTS.VBUSVLD`：只读状态位
+
+### 下一步
+
+要让 XNU 的 USB device 真正连上，需要补下面任意一条：
+
+1. **SPMI + PM8150 充电器的 VBUS 检测**（最小实现：读 VBUS 状态位，然后清 `DCTL.RUN_STOP`）。
+2. **gpio 强制 VBUS 有效**：若 PMIC 的 VBUS 输入可以配置成常有效，由 SPMI 写一次即可。
+3. 若 Mu UEFI 在运行时能把 VBUS 状态保留给 XNU，可省掉 SPMI（需要确认 XBL/UEFI 是否保持）。
+
+到这为止，DWC3 侧（PHY、core、SMMU、事件环、EP0 缓冲、device 初始化）全部就绪且逐项验证，
+唯一缺口是“core 看不到 VBUS”。
