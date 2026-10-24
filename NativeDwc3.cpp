@@ -797,16 +797,11 @@ static int dwc3Bringup(void)
   nabu_log_hex("phy:term2=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_flush(0);
   if (events) {
-    // Hold the link so the host has a long, steady window to react. This uses
-    // the ARM generic timer directly: IODelay/IOSleep need XNU's time base,
-    // which is not up this early, and spinning on it is what wedged run 23.
-    uint64_t freq = 0;
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    if (freq == 0 || freq > 400000000ULL) { freq = 19200000ULL; }
-    const uint64_t deadline = nabuCnt() + freq * 40ULL;   // 40 s
-    while (nabuCnt() < deadline) {
-      const uint64_t slice = nabuCnt() + freq / 50ULL;    // poll every 20 ms
-      while (nabuCnt() < slice) { __asm__ volatile("yield" ::: "memory"); }
+    // No long holds of any kind: every attempt to keep the link up longer
+    // (IODelay, CNTPCT spin) has ended in a wedged boot. Just drain what the
+    // ring already has and let the kernel continue.
+    for (unsigned round = 0; round < 200; ++round) {
+      for (unsigned i = 0; i < 20000; ++i) { __asm__ volatile("yield" ::: "memory"); }
       usbPollEvents();
     }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
