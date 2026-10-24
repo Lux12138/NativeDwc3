@@ -428,6 +428,30 @@ static bool femtoPhyInit(void)
   return true;
 }
 
+// msm_hsphy_drive_dp_pulse() (phy-msm-snps-hs.c). On CDP the charger's BC1.2
+// unit has been sitting on these same D+/D- lines, so dwc3-msm makes the device
+// re-announce itself by driving a FullSpeed J state and then releasing every
+// override. dwc3_msm_vbus_notifier calls it *before* dwc3_otg_start_peripheral,
+// i.e. before DCTL.RUN_STOP. The vendor's 200 ms has no usable time base this
+// early, so it is a bounded yield loop like every other settle in this file.
+static void femtoDpPulse(void)
+{
+  if (g_phy == nullptr) { return; }
+  phyWrMask(FEMTO_CFG0, 3u, 3u);                  // CMN + DATAPATH override
+  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // XCVRSEL
+  nabu_log_hex("phy:dp-pre=", phyRd(FEMTO_UTMI_CTRL0));
+  nabu_log_hex("phy:dp-xcvr=", phyRd(FEMTO_CTRL1));
+  for (unsigned i = 0; i < 4000000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 0);        // TERMSEL off
+  phyWrMask(FEMTO_CTRL1, 1u << 0, 0);             // XCVRSEL off
+  phyWrMask(FEMTO_CFG0, 3u, 0);                   // both overrides off
+  nabu_log_hex("phy:dp-post=", phyRd(FEMTO_UTMI_CTRL0));
+  nabu_log_hex("phy:dp-cfg=", phyRd(FEMTO_CFG0));
+  nabu_log_flush(0);
+}
+
 // ---- bring-up -------------------------------------------------------------------
 // ---- USB event buffer / SMMU ----------------------------------------------------
 // The DWC3 event ring must be physically contiguous and reachable by the controller's
@@ -905,6 +929,10 @@ static int dwc3Bringup(void)
   nabu_log_hex("qs:hs=", rd(QSCRATCH_HS_PHY_CTRL));
   nabu_log_hex("qs:osts-pre=", rd(DWC3_OSTS));
   nabu_log_flush(0);
+  // The PMIC reports CDP, so run the vendor's DP pulse here -- before RUN_STOP,
+  // and releasing every override when it ends. The previous order was the
+  // reverse (force after RUN_STOP and hold), and the host never sent a reset.
+  femtoDpPulse();
   // DCTL.RUN_STOP = 1 is run (dwc3_gadget_run_stop sets it when is_on). The
   // previous code cleared it immediately after setting it, which halts the core
   // and leaves D+ without a pull-up.
@@ -929,17 +957,6 @@ static int dwc3Bringup(void)
   nabu_log_hex("qs:dsts2=", rd(DWC3_DSTS));
   nabu_log_hex("qs:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
   nabu_log_hex("phy:term2=", phyRd(FEMTO_UTMI_CTRL0));
-  nabu_log_flush(0);
-  // Force the PHY's own pull-up now that the core is already in U0. These are
-  // the registers drive_dp_pulse() toggles; holding them on (instead of pulsing)
-  // is the one combination never tried together with the VBUS override, the S2CR
-  // bypass and a readable event ring.
-  phyWrMask(FEMTO_CFG0, 3u, 3u);                  // CMN + DATAPATH override
-  phyWrMask(FEMTO_UTMI_CTRL0, 0x18, 0x00);        // OPMODE = NORMAL
-  phyWrMask(FEMTO_UTMI_CTRL0, 1u << 5, 1u << 5);  // TERMSEL
-  phyWrMask(FEMTO_CTRL1, 1u << 0, 1u << 0);       // XCVRSEL
-  nabu_log_hex("phy:term-force=", phyRd(FEMTO_UTMI_CTRL0));
-  nabu_log_hex("phy:xcvr-force=", phyRd(FEMTO_CTRL1));
   nabu_log_flush(0);
   if (events) {
     // No long holds of any kind: every attempt to keep the link up longer
