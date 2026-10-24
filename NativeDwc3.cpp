@@ -242,6 +242,9 @@ static unsigned gccUsbPowerOn(void)
     }
   }
 
+  // AHB2PHY bridge reset: without it the femto PHY answers 0 on its AHB port.
+  gwr(GCC_USB_PHY_CFG_AHB2PHY_BCR, 0x1);
+  (void)waitMask(g_gcc + GCC_USB_PHY_CFG_AHB2PHY_BCR / 4, 0x1, 0, 100000);
   // resets = <&gcc GCC_USB30_PRIM_BCR> in the glue node.
   gwr(GCC_USB30_PRIM_BCR, 0x1);
   (void)waitMask(g_gcc + GCC_USB30_PRIM_BCR / 4, 0x1, 0, 100000);
