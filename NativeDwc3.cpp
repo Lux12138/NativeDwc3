@@ -747,6 +747,10 @@ static int dwc3Bringup(void)
       // Probe: drive PM8150B GPIO1's software output high (DIG_OUT_SRC_CTL bit0)
       // and see whether the PHY finally reports VBUS. APID 295 came from the table.
       nabu_log_hex("spmi:gpio1w=", spmiWrite(0x127u, 0xC044u, 1u) ? 1u : 0u);
+      // Android runs this board with TYPE_C_MODE_CFG = 0x10 (TWRP dmesg); XNU
+      // finds 0x02 there. Put it back to the Android value, since that value is
+      // the one the working stack uses.
+      nabu_log_hex("spmi:tcmode=", spmiWrite(0x10fu, 0x1544u, 0x10u) ? 1u : 0u);
     }
   }
   // Bootloader already had these rails up for fastboot's own USB session, so
