@@ -80,6 +80,8 @@
 #define DWC3_DCTL_L0VLDO_VOLT(n) (((n) & 0x7u) << 6)
 #define DWC3_DCTL_HIRD_THRES(n)  (((n) & 0x1Fu) << 24)
 #define DWC3_DCTL_IGNORE_STREAM  (1u << 18)
+/* Hold the D+ pull-up without VBUS detection (device side). */
+#define DWC3_DCTL_KEEP_CONNECT   (1u << 19)
 
 // --- DSTS bits ------------------------------------------------------------
 #define DWC3_DSTS_CONNECTSPD(n)  ((n) & 0x7u)
