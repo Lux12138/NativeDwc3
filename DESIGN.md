@@ -739,3 +739,35 @@ ABL 的 USB 配置（XBL 源码或 bootloader dump），可以顺带确认它给
 确认 `ctl_reg` 的算法），再解决访问使能，然后把 GPIO 38 切到 `usb_phy`。
 一旦这个引脚进入 usb_phy 模式且电平为高，PHY 的 VBUS 侧就应当成立，
 `OSTS.VBUSVLD` 会变 1，上拉随之出现——这是目前唯一还没走完的路径。
+
+# 2026-10-25 09:35 — 纠错：GPIO 38 本来就是 usb_phy，TLMM 里没有 VBUS 引脚
+
+`pinctrl-sm8150.c` 的宏签名是：
+
+    #define PINGROUP(id, base, f1, f2, ...)
+
+**第二个参数是 `base`（寄存器 tile 名，如 SOUTH/NORTH），不是功能。**
+所以 `[38] = PINGROUP(38, SOUTH, usb_phy, NA, ...)` 展开为
+`funcs = { "gpio", usb_phy, ... }`，即 **`usb_phy` 是 func 1**。
+
+bootloader 交接时 GPIO 38 的 `cfg=0x0001` → func 1 → **它本来就在 usb_phy 功能上**。
+run39-43 关于"GPIO 38 被切到 SOUTH 功能"的判断是错的，run41/43 的写入既无必要，
+其中一次还因为写到了未经确认的地址把板子弄挂。
+
+## TLMM 里与 USB 相关的功能只有三个
+
+    usb_phy      -> gpio38      （模拟测试输出，不是 VBUS 检测）
+    usb2phy_ac   -> gpio113/123 （AC 耦合）
+    atest_usb*   -> 若干
+
+**没有 VBUS 检测引脚**。PHY 的 `VBUSVLDEXT` 输入只能来自 PM8150B。
+
+## 因此当前的硬卡点
+
+- PHY 的 VBUS 侧信号来自 PM8150B，而 AP 在 SPMI 的 APID 表里**没有** charger
+  （0x210）或 PMIC GPIO（0x0C0）的映射，无法从 XNU 配置或读取它。
+- 设备树里也没有任何 `vbus` 相关的 GPIO/regulator 绑定。
+
+要继续，需要以下任一项：PM8150B 的原理图连接、XBL 里 `USB_CHG` 的处理代码，
+或一份能在 Android 下读 PMIC 寄存器的手段。在这之前，再刷这个板子只会得到同样的
+`U0 + devt=1(DISCONNECT) + 主机无设备`。
