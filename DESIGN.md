@@ -266,3 +266,46 @@ PHY 这一层需要换证据来源，不能再靠盲写寄存器：
 2. 或者移植 QCOM downstream 的 SM8150 HS PHY 驱动（`phy-msm-snps-hs` 系列），它才是这块板
    在 Android 上实际使用的代码。
 3. 在拿到对照值之前，`nabu-usb` 保持关闭，驱动不碰 USB 硬件。
+
+## 2026-10-24 23:28：PHY 从未“死”，阻塞改在 CURMOD
+
+Lineage 的 SM8150 设备树给出了两个此前不知道的事实：
+
+```
+hsphy@88e2000 {
+    compatible = "qcom,usb-hsphy-snps-femto";
+    reg = <0x88e2000 0x110>,      // 窗口只有 0x110
+          <0x007801f8 0x4>;       // eFuse RCAL
+    vdd-supply     = <&pm8150_l5>;   // 880 mV
+    vdda18-supply  = <&pm8150_l12>;  // 1.8 V
+    vdda33-supply  = <&pm8150_l2>;   // 3.072 V
+};
+```
+
+由此修正了两处：
+
+1. 之前按 qusb2 偏移读的 `0x1a0`、`0x240` 全部**在 0x110 窗口之外**，读到的是别的模块。
+2. mainline 的 femto 驱动缺少 QCOM 的 `RTUNE_SEL`（0xB4）和 RCAL；本板 eFuse RCAL 为
+   `0x01e00000`（非 0），所以本来就不需要 RTUNE_SEL。
+
+**PHY 的写测试（决定性）**：
+
+```
+COMMON0 读 0x88888888 → 写 0x88888808 → 读回 0x08080808
+```
+
+值随写变化，只读位被屏蔽。**AHB 写和读都到达 PHY，PHY 一直是活的。**
+
+## 现在的真正阻塞：core 没有切到 device
+
+| 寄存器 | 值 | 含义 |
+|---|---|---|
+| `GCTL` | `0x2001` | PRTCAPDIR=2（DEVICE）已写入 |
+| `GSTS` | `0x7e800000` | CURMOD = 0（仍为 OTG/未决定） |
+| `DSTS` | `0xd20001` | 按 device 寄存器读出，CONNECTSPD=1 |
+
+下一步只需解决“写了 PRTCAPDIR 但 CURMOD 不变”这一件事：查 Synopsys databook 里
+`GCTL.PrtCapDir` 的写入条件（是否要求先做一次 `GCTL.CoreSoftReset` 且保持
+`GUSB2PHYCFG.PHYSOFTRST` 时序），或者确认该 core 的 PRTCAPDIR 由外部 strap 固定。
+
+PHY、供电、SMMU、事件环、EP0 缓冲这五块基础设施现在都已验证或就绪。
