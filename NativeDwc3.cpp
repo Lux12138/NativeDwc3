@@ -1,19 +1,16 @@
 // NativeDwc3 -- SM8150 USB0 (DWC3) bring-up, staged so a hang localises itself.
 //
-// Stage 0  GCC: power usb30_prim GDSC, enable clkref + the branch clocks and the
-//          QUSB2 PHY reset deassert. Nothing here touches the controller.
-// Stage 1  read-only core identification (GSNPSID, GHWPARAMS0, DSTS).
-// Stage 2  (gated by nabu-usb-init=1) core soft reset, device mode, RUN_STOP.
+//  0  RPMh vote: ldoa5 (vdda-pll), ldoa2 (vdda33), ldoa12 (vdda18).
+//  1  GCC: usb30_prim GDSC, SEC clkref, branch clocks, USB30_PRIM reset.
+//  2  7nm femto HS PHY init (UTMI clock to the core).
+//  3  read-only core identification (GSNPSID/GHWPARAMS).
+//  4  (nabu-usb-init=1) core soft reset, device mode, RUN_STOP.
 //
-// Entry point is native_dwc3_bringup(), called by the platform probe. The
-// IOService personality cannot win the single IOPlatformDevice nub (NativeUfs
-// scores 1000), so start() is not relied on.
+// Entry point is native_dwc3_bringup(), called by the UFS probe: the
+// IOService personality cannot win the single IOPlatformDevice nub.
 //
-// Everything is behind nabu-usb=1 in boot-args: the driver can ship in the kernel
-// while the board keeps booting with USB untouched.
-//
-// Follows Android drivers/usb/dwc3/core.c (dwc3_core_init) and
-// drivers/usb/dwc3/dwc3-qcom.c (clock/GDSC order). See DESIGN.md.
+// References: dwc3/core.c, dwc3-qcom.c, phy-qcom-snps-femto-v2.c,
+// gcc-sm8150.c, cmd-db.c, rpmh-rsc.c, qcom-rpmh-regulator.c.
 
 #include "NativeDwc3.h"
 #include "Dwc3Registers.h"
@@ -43,14 +40,12 @@ OSSharedPtr<IOMemoryMap> g_gccKeep;
 volatile uint32_t *g_regs = nullptr;
 volatile uint32_t *g_gcc = nullptr;
 int g_bringup_done = 0;
-int g_bringup_result = -1;
 
 inline uint32_t rd(unsigned long off) { return g_regs[off / 4]; }
 inline void wr(unsigned long off, uint32_t v) { g_regs[off / 4] = v; }
 inline uint32_t grd(unsigned long off) { return g_gcc[off / 4]; }
 inline void gwr(unsigned long off, uint32_t v) { g_gcc[off / 4] = v; }
 
-// same pattern NativeUfs uses; proved to work on this platform
 static uintptr_t mapPhys(uint64_t phys, uint64_t length, OSSharedPtr<IOMemoryMap> &keep)
 {
   IODeviceMemory *memory = IODeviceMemory::withRange(phys, length);
@@ -69,88 +64,24 @@ static bool waitMask(volatile uint32_t *reg, uint32_t mask, uint32_t value, unsi
   return false;
 }
 
-// usb30_prim GDSC on, then every branch the controller needs. Returns how many
-// branch clocks failed to report CLK_OFF = 0 (0 is the healthy result).
-static unsigned gccUsbPowerOn(void)
-{
-  const uintptr_t va = mapPhys(GCC_BASE, 0x100000, g_gccKeep);
-  g_gcc = reinterpret_cast<volatile uint32_t *>(va);
-  nabu_mark_num("dwc3:gcc=", (unsigned long)va, 2100);
-  if (g_gcc == nullptr) {
-    return 0xff;
-  }
-
-  // Power domain first: the branch registers do not stick while it is collapsed.
-  uint32_t gdscr = grd(GCC_USB30_PRIM_GDSCR);
-  nabu_log_hex("dwc3:gdscr=", gdscr);
-  gwr(GCC_USB30_PRIM_GDSCR, gdscr & ~GCC_GDSCR_SW_COLLAPSE);
-  if (!waitMask(g_gcc + GCC_USB30_PRIM_GDSCR / 4, GCC_GDSCR_PWR_ON, GCC_GDSCR_PWR_ON, 100000)) {
-    nabu_log_puts("dwc3:gdsc-timeout\n");
-    return 0xfe;
-  }
-
-  // 19.2 MHz reference to the PHY PLL. The usb_1 glue node names
-  // GCC_USB3_SEC_CLKREF_CLK (0x8c028), not the PRIM one.
-  gwr(GCC_USB3_SEC_CLKREF_CLK, grd(GCC_USB3_SEC_CLKREF_CLK) | GCC_BRANCH_ENABLE_BIT);
-
-  // Master source: 200 MHz = GPLL0_OUT_MAIN / 3. Only configure it when the
-  // register reads back something that is not already that setting -- boot may
-  // have left it valid and rewriting a live RCG can glitch the branch.
-  const uint32_t cfg = grd(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG);
-  nabu_log_hex("dwc3:rcgcfg=", cfg);
-  /* Boot leaves MODE=1 (MND) with M/N/D = 0, i.e. no output at all: the core
-   * then reads back 0 from every register. Program DIV mode (200 MHz =
-   * GPLL0_OUT_MAIN/3) with the master branch halted first -- an RCG write while
-   * the branch runs is dropped. */
-  nabu_log_hex("dwc3:rcgm=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + 0x8));
-  gwr(GCC_USB30_PRIM_MASTER_CLK, grd(GCC_USB30_PRIM_MASTER_CLK) & ~GCC_BRANCH_ENABLE_BIT);
-  (void)waitMask(g_gcc + GCC_USB30_PRIM_MASTER_CLK / 4, GCC_BRANCH_CLK_OFF, GCC_BRANCH_CLK_OFF, 100000);
-  const uint32_t want = (GCC_USB_MASTER_SRC_GPLL0_MAIN << 8) | (GCC_USB_MASTER_DIV_200MHZ << 16);
-  gwr(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG, want);
-  gwr(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CMD, GCC_USB_MASTER_SRC_GPLL0_MAIN | GCC_RCG2_CMD_UPDATE);
-  (void)waitMask(g_gcc + (GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CMD) / 4, GCC_RCG2_CMD_UPDATE, 0, 100000);
-  nabu_log_hex("dwc3:rcgcfg2=", grd(GCC_USB30_PRIM_MASTER_CLK_SRC + GCC_RCG2_CFG));
-
-  static const unsigned long branches[] = {
-    GCC_USB30_PRIM_MASTER_CLK,
-    GCC_USB30_PRIM_SLEEP_CLK,
-    GCC_USB30_PRIM_MOCK_UTMI_CLK,
-    GCC_USB3_PRIM_PHY_AUX_CLK,
-    GCC_USB3_PRIM_PHY_COM_AUX_CLK,
-    GCC_USB3_PRIM_PHY_PIPE_CLK,
-    GCC_AGGRE_USB3_PRIM_AXI_CLK,
-    GCC_CFG_NOC_USB3_PRIM_AXI_CLK,
-  };
-  for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
-    gwr(branches[i], grd(branches[i]) | GCC_BRANCH_ENABLE_BIT);
-  }
-  unsigned failed = 0;
-  for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
-    if (!waitMask(g_gcc + branches[i] / 4, GCC_BRANCH_CLK_OFF, 0, 100000)) {
-      ++failed;
-    }
-  }
-
-  // Release the controller reset (usb_1 glue: resets = <&gcc GCC_USB30_PRIM_BCR>).
-  // Without this the core answers reads with bus default data, not GSNPSID.
-  gwr(GCC_USB30_PRIM_BCR, 0x1);
-  (void)waitMask(g_gcc + GCC_USB30_PRIM_BCR / 4, 0x1, 0, 100000);
-
-  // Release the QUSB2 PHY from reset.
-  gwr(GCC_QUSB2PHY_PRIM_BCR, 0x1);
-  (void)waitMask(g_gcc + GCC_QUSB2PHY_PRIM_BCR / 4, 0x1, 0, 100000);
-  return failed;
-}
-
-// ---- RPMh / cmd_db -------------------------------------------------------------
-// Reference: drivers/soc/qcom/cmd-db.c, rpmh-rsc.c, qcom-rpmh-regulator.c.
-// cmd_db is the aop_cmd_db reserved region (SM8150 DTS 0x85f20000);
-// the AP's RSC is drv-2 at 0x18220000 with TCS at +0xd00.
+// ---- RPMh / cmd_db --------------------------------------------------------------
 #define CMD_DB_BASE 0x85F20000ULL
 #define CMD_DB_SIZE 0x20000ULL
 #define RSC_DRV2_BASE 0x18220000ULL
 #define RSC_DRV_SIZE 0x10000ULL
 #define RSC_TCS_OFFSET 0xd00
+#define RSC_TCS_CONTROL 0x14
+#define RSC_TCS_CMD_ENABLE 0x1c
+#define RSC_TCS_CMD_MSGID 0x30
+#define RSC_TCS_CMD_ADDR 0x34
+#define RSC_TCS_CMD_DATA 0x38
+#define RSC_TCS_CMD_STATUS 0x3c
+#define TCS_AMC_ENABLE (1u << 16)
+#define TCS_AMC_TRIGGER (1u << 24)
+#define RPMH_MSGID_LEN 8u
+#define RPMH_MSGID_RESP (1u << 8)
+#define RPMH_MSGID_WRITE (1u << 16)
+#define RPMH_CMD_COMPL (1u << 16)
 
 static OSSharedPtr<IOMemoryMap> g_cmdKeep, g_rscKeep;
 static volatile uint8_t *g_cmd;
@@ -203,41 +134,6 @@ static uint32_t rpmhCmdDbAddr(const char *name)
   return 0;
 }
 
-// Read-only: prove the table and the RSC are where the DTS says before any write.
-static void rpmhProbe(void)
-{
-  g_cmd = reinterpret_cast<volatile uint8_t *>(mapPhys(CMD_DB_BASE, CMD_DB_SIZE, g_cmdKeep));
-  g_rsc = reinterpret_cast<volatile uint32_t *>(mapPhys(RSC_DRV2_BASE, RSC_DRV_SIZE, g_rscKeep));
-  if (g_cmd == 0 || g_rsc == 0) {
-    nabu_log_puts("rpmh:map-bad\n");
-    return;
-  }
-  nabu_log_hex("rpmh:ldoa2=", rpmhCmdDbAddr("ldoa2"));
-  nabu_log_hex("rpmh:ldoa5=", rpmhCmdDbAddr("ldoa5"));
-  nabu_log_hex("rpmh:ldoa12=", rpmhCmdDbAddr("ldoa12"));
-  nabu_log_hex("rpmh:drvid=", rscRd(0));
-  nabu_log_hex("rpmh:config=", rscRd(0x4));
-}
-
-// ---- RPMh write path ------------------------------------------------------------
-// v2.7 TCS layout (major = 1 < 3). One command per trigger, each waited for.
-#define RSC_TCS_SIZE 672
-#define RSC_TCS_CONTROL 0x14
-#define RSC_TCS_CMD_ENABLE 0x1c
-#define RSC_TCS_CMD_MSGID 0x30
-#define RSC_TCS_CMD_ADDR 0x34
-#define RSC_TCS_CMD_DATA 0x38
-#define RSC_TCS_CMD_STATUS 0x3c
-#define RSC_TCS_CMD_STEP 20
-#define TCS_AMC_ENABLE (1u << 16)
-#define TCS_AMC_TRIGGER (1u << 24)
-#define RPMH_MSGID_LEN 8u
-#define RPMH_MSGID_RESP (1u << 8)
-#define RPMH_MSGID_WRITE (1u << 16)
-#define RPMH_CMD_COMPL (1u << 16)
-
-static void rscWr(unsigned long off, uint32_t v) { g_rsc[off / 4] = v; }
-
 static bool rpmhWrite(uint32_t addr, uint32_t data)
 {
   const unsigned long tcs = RSC_TCS_OFFSET; // active TCS 0
@@ -275,14 +171,29 @@ static bool rpmhSetLdo(uint32_t base, uint32_t mV)
   return ok;
 }
 
+static void rpmhProbe(void)
+{
+  g_cmd = reinterpret_cast<volatile uint8_t *>(mapPhys(CMD_DB_BASE, CMD_DB_SIZE, g_cmdKeep));
+  g_rsc = reinterpret_cast<volatile uint32_t *>(mapPhys(RSC_DRV2_BASE, RSC_DRV_SIZE, g_rscKeep));
+  if (g_cmd == 0 || g_rsc == 0) {
+    nabu_log_puts("rpmh:map-bad\n");
+    return;
+  }
+  nabu_log_hex("rpmh:ldoa2=", rpmhCmdDbAddr("ldoa2"));
+  nabu_log_hex("rpmh:ldoa5=", rpmhCmdDbAddr("ldoa5"));
+  nabu_log_hex("rpmh:ldoa12=", rpmhCmdDbAddr("ldoa12"));
+  nabu_log_hex("rpmh:drvid=", rscRd(0));
+  nabu_log_hex("rpmh:config=", rscRd(0x4));
+  nabu_log_hex("rpmh:tcs_ctrl=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CONTROL));
+  nabu_log_hex("rpmh:tcs_en=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_ENABLE));
+  nabu_log_hex("rpmh:tcs_stat=", rscRd(RSC_TCS_OFFSET + RSC_TCS_CMD_STATUS));
+}
+
 static bool rpmhUsbPhyRails(void)
 {
   const uint32_t l2 = rpmhCmdDbAddr("ldoa2");
   const uint32_t l5 = rpmhCmdDbAddr("ldoa5");
   const uint32_t l12 = rpmhCmdDbAddr("ldoa12");
-  nabu_log_hex("rpmh:l2=", l2);
-  nabu_log_hex("rpmh:l5=", l5);
-  nabu_log_hex("rpmh:l12=", l12);
   bool ok = true;
   ok = rpmhSetLdo(l5, 880) && ok;   // vdda-pll
   ok = rpmhSetLdo(l2, 3072) && ok;  // vdda33
@@ -291,9 +202,53 @@ static bool rpmhUsbPhyRails(void)
   return ok;
 }
 
-// ---- 7nm femto HS PHY (hsphy@88e2000) -------------------------------------------
-// Register map and sequence from drivers/phy/qualcomm/phy-qcom-snps-femto-v2.c
-// (compatible "qcom,sm8150-usb-hs-phy"). QUSB2 offsets do not apply here.
+// ---- GCC USB30_PRIM -------------------------------------------------------------
+static unsigned gccUsbPowerOn(void)
+{
+  const uintptr_t va = mapPhys(GCC_BASE, 0x100000, g_gccKeep);
+  g_gcc = reinterpret_cast<volatile uint32_t *>(va);
+  if (g_gcc == nullptr) {
+    return 0xff;
+  }
+
+  uint32_t gdscr = grd(GCC_USB30_PRIM_GDSCR);
+  nabu_log_hex("dwc3:gdscr=", gdscr);
+  gwr(GCC_USB30_PRIM_GDSCR, gdscr & ~GCC_GDSCR_SW_COLLAPSE);
+  if (!waitMask(g_gcc + GCC_USB30_PRIM_GDSCR / 4, GCC_GDSCR_PWR_ON, GCC_GDSCR_PWR_ON, 100000)) {
+    nabu_log_puts("dwc3:gdsc-timeout\n");
+    return 0xfe;
+  }
+
+  // usb_1 glue names GCC_USB3_SEC_CLKREF_CLK, not the PRIM one.
+  gwr(GCC_USB3_SEC_CLKREF_CLK, grd(GCC_USB3_SEC_CLKREF_CLK) | GCC_BRANCH_ENABLE_BIT);
+
+  static const unsigned long branches[] = {
+    GCC_USB30_PRIM_MASTER_CLK,
+    GCC_USB30_PRIM_SLEEP_CLK,
+    GCC_USB30_PRIM_MOCK_UTMI_CLK,
+    GCC_USB3_PRIM_PHY_AUX_CLK,
+    GCC_USB3_PRIM_PHY_COM_AUX_CLK,
+    GCC_USB3_PRIM_PHY_PIPE_CLK,
+    GCC_AGGRE_USB3_PRIM_AXI_CLK,
+    GCC_CFG_NOC_USB3_PRIM_AXI_CLK,
+  };
+  for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
+    gwr(branches[i], grd(branches[i]) | GCC_BRANCH_ENABLE_BIT);
+  }
+  unsigned failed = 0;
+  for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
+    if (!waitMask(g_gcc + branches[i] / 4, GCC_BRANCH_CLK_OFF, 0, 100000)) {
+      ++failed;
+    }
+  }
+
+  // resets = <&gcc GCC_USB30_PRIM_BCR> in the glue node.
+  gwr(GCC_USB30_PRIM_BCR, 0x1);
+  (void)waitMask(g_gcc + GCC_USB30_PRIM_BCR / 4, 0x1, 0, 100000);
+  return failed;
+}
+
+// ---- 7nm femto HS PHY -----------------------------------------------------------
 #define QUSB2_BASE 0x088E2000ULL
 #define FEMTO_UTMI_CTRL0 0x3c
 #define FEMTO_UTMI_CTRL5 0x50
@@ -352,94 +307,73 @@ static bool femtoPhyInit(void)
   return true;
 }
 
+// ---- bring-up -------------------------------------------------------------------
 static int dwc3Bringup(void)
 {
   if (g_bringup_done) {
-    return g_bringup_result;
+    return 0;
   }
   g_bringup_done = 1;
-  g_bringup_result = 0;
   nabu_log_puts("dwc3:start\n");
 
-  /* Off by default: stage 0 works (GDSC on, all branch clocks running) but the
-   * core still reads 0 because the 7nm HS PHY needs PMIC LDOs XNU does not drive
-   * yet. Flip nabu-usb=1 once that exists. */
   int enable = 1, init = 0;
   (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
   (void)PE_parse_boot_argn("nabu-usb-init", &init, sizeof(init));
   if (!enable) {
     nabu_log_puts("dwc3:off\n");
-    nabu_mark_text("dwc3:off", 2100);
     return 0;
   }
 
   rpmhProbe();
-  if (g_rpmhWriteEnable) { (void)rpmhUsbPhyRails(); }
+  (void)rpmhUsbPhyRails();
+
   const unsigned failed = gccUsbPowerOn();
+  nabu_log_hex("dwc3:clkfail=", failed);
+  if (failed == 0xff) {
+    nabu_log_puts("dwc3:gcc-map-bad\n");
+    return -1;
+  }
+
   if (!femtoPhyInit()) {
     nabu_log_puts("dwc3:phy-bad\n");
   }
-  nabu_log_hex("dwc3:clkfail=", failed);
-  nabu_mark_num("dwc3:clkfail=", (unsigned long)failed, 2180);
-  if (failed == 0xff) {
-    nabu_log_puts("dwc3:gcc-map-bad\n");
-    nabu_mark_text("dwc3:gcc-map-bad", 2100);
-    return -1;
-  }
-  if (failed) {
-    nabu_mark_text("dwc3:clk-bad", 2100);
-    // Keep going: the core read below says whether the domain is actually usable.
+
+  // Release the QUSB2 PHY reset after the rails are up (glue node resets = ...).
+  if (g_gcc != nullptr) {
+    gwr(GCC_QUSB2PHY_PRIM_BCR, 0x1);
+    (void)waitMask(g_gcc + GCC_QUSB2PHY_PRIM_BCR / 4, 0x1, 0, 100000);
   }
 
-  // ---- stage 1: identify the core (read-only) ------------------------------
   const uintptr_t va = mapPhys(NABU_USB0_CORE_BASE, NABU_USB0_CORE_SIZE, g_keep);
   g_regs = reinterpret_cast<volatile uint32_t *>(va);
-  nabu_mark_num("dwc3:core=", (unsigned long)va, 2260);
   if (g_regs == nullptr) {
     nabu_log_puts("dwc3:map-failed\n");
-    nabu_mark_text("dwc3:map-failed", 2100);
     return -1;
   }
-
   nabu_log_hex("dwc3:cap=", rd(0x0));
-  nabu_log_hex("dwc3:hcsp=", rd(0x4));
-  nabu_log_hex("dwc3:gsbus=", rd(DWC3_GSBUSCFG0));
-  nabu_log_hex("dwc3:guid=", rd(DWC3_GUID));
   const uint32_t sid = rd(DWC3_GSNPSID);
   nabu_log_hex("dwc3:sid=", sid);
-  nabu_mark_num("dwc3:sid=", (unsigned long)sid, 2260);
   const uint32_t family = sid & DWC3_GSNPSID_MASK;
   if (family != DWC3_GSNPSID_DWC_USB3 && family != DWC3_GSNPSID_DWC_USB31) {
     nabu_log_puts("dwc3:id-bad\n");
-    nabu_mark_text("dwc3:id-bad", 2100);
     return -1;
   }
   nabu_log_hex("dwc3:params0=", rd(DWC3_GHWPARAMS0));
-  nabu_log_hex("dwc3:params1=", rd(DWC3_GHWPARAMS1));
-  nabu_log_hex("dwc3:params3=", rd(DWC3_GHWPARAMS3));
-  nabu_mark_num("dwc3:params=", (unsigned long)rd(DWC3_GHWPARAMS0), 2340);
 
-  // ---- stage 2: controller init (only when asked) --------------------------
   if (!init) {
     nabu_log_puts("dwc3:stage1-done\n");
-    nabu_mark_text("dwc3:stage1-done", 2100);
     return 1;
   }
 
-  // dwc3_core_init(): pulse GCTL.CORESOFTRESET, wait for it to clear.
   const uint32_t gctl0 = rd(DWC3_GCTL);
   wr(DWC3_GCTL, gctl0 | DWC3_GCTL_CORESOFTRESET);
-  if (!waitMask(g_regs + DWC3_GCTL / 4, DWC3_GCTL_CORESOFTRESET, DWC3_GCTL_CORESOFTRESET, 10000)) {
-    nabu_mark_text("dwc3:reset-bad", 2100);
-  }
+  (void)waitMask(g_regs + DWC3_GCTL / 4, DWC3_GCTL_CORESOFTRESET, DWC3_GCTL_CORESOFTRESET, 10000);
   wr(DWC3_GCTL, gctl0 & ~DWC3_GCTL_CORESOFTRESET);
   if (!waitMask(g_regs + DWC3_GCTL / 4, DWC3_GCTL_CORESOFTRESET, 0, 10000)) {
     nabu_log_puts("dwc3:reset-stuck\n");
-    nabu_mark_text("dwc3:reset-stuck", 2100);
     return -1;
   }
 
-  // Device mode.
   uint32_t gctl = rd(DWC3_GCTL);
   gctl &= ~DWC3_GCTL_SCALEDOWN(3);
   gctl |= DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_DEVICE);
@@ -452,9 +386,7 @@ static int dwc3Bringup(void)
 
   wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
   nabu_log_hex("dwc3:dsts=", rd(DWC3_DSTS));
-  nabu_mark_num("dwc3:dsts=", (unsigned long)rd(DWC3_DSTS), 2340);
   nabu_log_puts("dwc3:stage2-done\n");
-  nabu_mark_text("dwc3:stage2-done", 2100);
   return 2;
 }
 
