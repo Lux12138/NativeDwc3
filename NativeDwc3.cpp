@@ -396,7 +396,7 @@ static bool femtoPhyInit(void)
   phyWrMask(FEMTO_CFG0, 1u << 1, 0);              // clear CMN override
   nabu_log_hex("phy:ctrl0b=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_hex("phy:ctrl1b=", phyRd(FEMTO_UTMI_CTRL1));
-  nabu_log_hex("phy:common0b=", phyRd(FEMTO_COMMON0))
+  nabu_log_hex("phy:common0b=", phyRd(FEMTO_COMMON0));
 
   for (unsigned i = 0; i < 100000; ++i) {
     __asm__ volatile("yield" ::: "memory");
