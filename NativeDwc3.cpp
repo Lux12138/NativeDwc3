@@ -394,7 +394,11 @@ static bool femtoPhyInit(void)
     }
   }
 
-  phyWrMask(FEMTO_COMMON2, 1u << 0, 1u << 0);     // VREGBYPASS
+  // Vendor sets VREGBYPASS=1, i.e. the PHY expects 1.8 V on vdda18 and bypasses
+  // its own regulator. The analog side never responds here, so try the internal
+  // regulator instead: if vdda18 is the missing rail, this is what brings the
+  // D+ pull-up back.
+  phyWrMask(FEMTO_COMMON2, 1u << 0, 0);           // VREGBYPASS = 0
   phyWrMask(FEMTO_CTRL2, (1u << 3) | (1u << 2), (1u << 3) | (1u << 2));
   phyWrMask(FEMTO_UTMI_CTRL0, 1u << 0, 1u << 0);  // SLEEPM
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 0);        // POR = 0
@@ -598,12 +602,15 @@ static int dwc3Bringup(void)
       // one entry per APID at 0x900 + 4*apid, and each entry holds the PPID in
       // bits[23:8]. This is NOT the v2 16-level tree at 0xB00 that the earlier
       // code walked, which is why every lookup reported valid=0.
+      for (unsigned a = 0; a < 16; ++a) {
+        nabu_log_hex("spmi:mt=", spmi[(0x900 / 4) + a]);
+      }
       static const unsigned kSpmiRegs[] = { 0x1010, 0x1008, 0x1700, 0x1704 };
       for (unsigned r = 0; r < sizeof(kSpmiRegs) / sizeof(kSpmiRegs[0]); ++r) {
         const unsigned addr = kSpmiRegs[r];
         const unsigned ppid = (2u << 8) | ((addr >> 8) & 0xffu);  // PM8150B = sid 2
         unsigned apid = 0xffffffffU;
-        for (unsigned a = 0; a < 128; ++a) {
+        for (unsigned a = 0; a < 512; ++a) {
           uint32_t ent = spmi[(0x900 / 4) + a];
           if (!ent) { continue; }
           if (((ent >> 8) & 0xfffu) == ppid) { apid = a; break; }
