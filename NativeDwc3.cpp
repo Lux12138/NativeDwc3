@@ -587,6 +587,13 @@ static int dwc3Bringup(void)
     nabu_log_hex("dwc3:g2rst=", rd(DWC3_GUSB2PHYCFG(0)));
   }
 
+  // QMP (USB3) PHY is not brought up: suspend the SS pipe and ask for HS, or the
+  // core negotiates a SuperSpeed link that has no lane and the host sees nothing.
+  nabu_log_hex("dwc3:g3ctl=", rd(DWC3_GUSB3PIPECTL(0)));
+  wr(DWC3_GUSB3PIPECTL(0), rd(DWC3_GUSB3PIPECTL(0)) | (1u << 17));
+  nabu_log_hex("dwc3:g3ctl2=", rd(DWC3_GUSB3PIPECTL(0)));
+  wr(DWC3_DCFG, rd(DWC3_DCFG) & ~0x7u);
+  nabu_log_hex("dwc3:dcfg=", rd(DWC3_DCFG));
   const bool events = usbEventInit();
   // Force a connect edge: stop, wait, then start with the event mask already open.
   wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
