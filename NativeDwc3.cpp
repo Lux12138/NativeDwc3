@@ -404,8 +404,7 @@ static bool usbEventInit(void)
   for (unsigned i = 0; i < 1024; ++i) { g_evt[i] = 0; }
   nabu_log_puts("usb:smmu\n");
   nabu_log_flush(0);
-  // Keep the SMMU untouched for now: bypassing 0x140 shares UFS context banks.
-  // (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
+  (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
   nabu_log_puts("usb:smmu-done\n");
   nabu_log_flush(0);
 
