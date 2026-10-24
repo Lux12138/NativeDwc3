@@ -404,14 +404,16 @@ static bool usbEventInit(void)
   for (unsigned i = 0; i < 1024; ++i) { g_evt[i] = 0; }
   nabu_log_puts("usb:smmu\n");
   nabu_log_flush(0);
-  (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
+  // Keep the SMMU untouched for now: bypassing 0x140 shares UFS context banks.
+  // (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
   nabu_log_puts("usb:smmu-done\n");
   nabu_log_flush(0);
 
   wr(DWC3_GEVNTADRLO(0), static_cast<uint32_t>(g_evtPhys));
   wr(DWC3_GEVNTADRHI(0), static_cast<uint32_t>(g_evtPhys >> 32));
   wr(DWC3_GEVNTSIZ(0), 4096);
-  wr(DWC3_DEVTEN, 0xf); // disconnect, reset, connect-done, setup
+  wr(DWC3_GEVTEN, 1);
+  wr(DWC3_DEVTEN, 0); // events stay off until an interrupt handler exists
   nabu_log_hex("usb:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
   return true;
 }
