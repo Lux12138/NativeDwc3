@@ -362,6 +362,64 @@ static bool femtoPhyInit(void)
 }
 
 // ---- bring-up -------------------------------------------------------------------
+// ---- USB event buffer / SMMU ----------------------------------------------------
+// The DWC3 event ring must be physically contiguous and reachable by the controller's
+// stream (0x140 on apps_smmu). The address floor is the same one UFS proved: buffers
+// below 0xC8000000 reset the board on the first command.
+#include <IOKit/IOBufferMemoryDescriptor.h>
+#include <kern/task.h>
+
+extern "C" int native_smmu_bypass(uint16_t stream, uint64_t dma, uint64_t bytes);
+
+static IOBufferMemoryDescriptor *g_evtDma;
+static volatile uint32_t *g_evt;
+static uint64_t g_evtPhys;
+
+static bool usbEventInit(void)
+{
+  g_evtDma = IOBufferMemoryDescriptor::inTaskWithOptions(
+    kernel_task,
+    static_cast<IOOptionBits>(kIODirectionInOut) |
+      static_cast<IOOptionBits>(kIOMemoryPhysicallyContiguous) |
+      static_cast<IOOptionBits>(kIOMemoryMapperNone),
+    4096, 4096);
+  if (g_evtDma == nullptr) {
+    nabu_log_puts("usb:dma-fail\n");
+    return false;
+  }
+  g_evt = reinterpret_cast<volatile uint32_t *>(g_evtDma->getBytesNoCopy());
+  IOByteCount contiguous = 0;
+  g_evtPhys = g_evtDma->getPhysicalSegment(0, &contiguous, kIOMemoryMapperNone);
+  nabu_log_hex("usb:evtpa=", g_evtPhys);
+  nabu_log_hex("usb:evtlen=", contiguous);
+  if (g_evt == nullptr || g_evtPhys == 0 || (g_evtPhys & 4095) || contiguous < 4096) {
+    nabu_log_puts("usb:dma-bad\n");
+    return false;
+  }
+  for (unsigned i = 0; i < 1024; ++i) { g_evt[i] = 0; }
+  (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
+
+  wr(DWC3_GEVNTADRLO(0), static_cast<uint32_t>(g_evtPhys));
+  wr(DWC3_GEVNTADRHI(0), static_cast<uint32_t>(g_evtPhys >> 32));
+  wr(DWC3_GEVNTSIZ(0), 4096);
+  wr(DWC3_DEVTEN, 0xf); // disconnect, reset, connect-done, setup
+  nabu_log_hex("usb:evtcnt=", rd(DWC3_GEVNTCOUNT(0)));
+  return true;
+}
+
+static void usbPollEvents(void)
+{
+  uint32_t count = rd(DWC3_GEVNTCOUNT(0));
+  nabu_log_hex("usb:evtcnt2=", count);
+  if (count == 0) {
+    return;
+  }
+  nabu_log_hex("usb:evt0=", g_evt[0]);
+  nabu_log_hex("usb:evt1=", g_evt[1]);
+  nabu_log_hex("usb:evt2=", g_evt[2]);
+  wr(DWC3_GEVNTCOUNT(0), count & 0xfffc);
+}
+
 static int dwc3Bringup(void)
 {
   if (g_bringup_done) {
@@ -454,6 +512,10 @@ static int dwc3Bringup(void)
   wr(DWC3_GUSB2PHYCFG(0), p2);
 
   wr(DWC3_DCTL, rd(DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
+  if (usbEventInit()) {
+    for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    usbPollEvents();
+  }
   nabu_log_hex("dwc3:dsts=", rd(DWC3_DSTS));
   nabu_log_puts("dwc3:stage2-done\n");
   return 2;
