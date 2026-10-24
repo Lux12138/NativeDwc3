@@ -309,3 +309,36 @@ COMMON0 读 0x88888888 → 写 0x88888808 → 读回 0x08080808
 `GUSB2PHYCFG.PHYSOFTRST` 时序），或者确认该 core 的 PRTCAPDIR 由外部 strap 固定。
 
 PHY、供电、SMMU、事件环、EP0 缓冲这五块基础设施现在都已验证或就绪。
+
+## 2026-10-24 23:36：最后一道门是 CURMOD
+
+这一轮把 DWC3 device 初始化里缺的步骤补齐了：
+
+| 补齐的步骤 | 来源 |
+|---|---|
+| `GCTL` 整体写 device 模式（不能保留旧位） | dwc3/core.c `dwc3_set_prtcap` |
+| `GUSB2PHYCFG.PHYSOFTRST` 脉冲 | dwc3/core.c `dwc3_core_init` |
+| `DCTL.CSFTRST` 脉冲 | dwc3/core.c `dwc3_gadget_init` |
+| PHY `SUSPEND_N` 清零（resume） | `msm_hsphy_set_suspend(0)` |
+| PHY `SLEEPM=0`、`OPMODE=NORMAL` | `phy_power_on` |
+| RCAL / RTUNE_SEL | `phy-msm-snps-hs.c` |
+
+结果：
+
+```
+GCTL  = 0x2001    PRTCAPDIR = 2 (DEVICE)
+DCTL  = 0x00f00000 RUN_STOP = 0
+GSTS  = 0x7e800000 CURMOD = 0   ← 仍然不是 device
+DSTS  = 0xd20001   CONNECTSPD = 1
+```
+
+**PHY、供电、SMMU、事件环、EP0 缓冲全部就绪并已验证，唯一剩下的就是 CURMOD 不切换。**
+
+QCOM 的 `dwc3-msm.c` 不是在 probe 里写 PRTCAPDIR 就完事，它用 `id_state`
+（ID 引脚 / extcon）驱动 `msm_dwc3_set_mode()`，由 VBUS/ID 事件决定 host 或 device。
+下一步应当移植这条路径，或者在写 PRTCAPDIR 之前先把 ID 状态置为 ground：
+
+```c
+case DWC3_ID_GROUND:  dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_DEVICE); break;
+case DWC3_ID_FLOAT:   dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_HOST);   break;
+```
