@@ -332,6 +332,9 @@ static int dwc3Bringup(void)
 
   rpmhProbe();
   (void)rpmhUsbPhyRails();
+  // RPMh completion means the RSC accepted the command, not that the PMIC
+  // finished ramping. Give the rails time before the PHY AHB is touched.
+  for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
 
   const unsigned failed = gccUsbPowerOn();
   nabu_log_hex("dwc3:clkfail=", failed);
