@@ -747,6 +747,11 @@ static int dwc3Bringup(void)
       // Probe: drive PM8150B GPIO1's software output high (DIG_OUT_SRC_CTL bit0)
       // and see whether the PHY finally reports VBUS. APID 295 came from the table.
       nabu_log_hex("spmi:gpio1w=", spmiWrite(0x127u, 0xC044u, 1u) ? 1u : 0u);
+      // The DT's extcon_usb1 node names vbus-out-gpio = <&pm8150b_gpios 9>, i.e.
+      // PM8150B GPIO9 is the VBUS-valid output the extcon driver drives into the
+      // PHY. Drive it high and read GPIO10 (vbus-in) back.
+      nabu_log_hex("spmi:vbusout=", spmiWrite(0x12cu, 0xC844u, 1u) ? 1u : 0u);
+      nabu_log_hex("spmi:vbusout2=", spmiWrite(0x12cu, 0xC845u, 1u) ? 1u : 0u);
       // Android runs this board with TYPE_C_MODE_CFG = 0x10 (TWRP dmesg); XNU
       // finds 0x02 there. Put it back to the Android value, since that value is
       // the one the working stack uses.
