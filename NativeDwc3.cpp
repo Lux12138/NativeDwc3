@@ -531,6 +531,7 @@ static int dwc3Bringup(void)
     for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
     usbPollEvents();
   }
+  nabu_log_hex("dwc3:gctl2=", rd(DWC3_GCTL));
   nabu_log_hex("dwc3:gsts=", rd(DWC3_GSTS));
   nabu_log_hex("dwc3:g2cfg=", rd(DWC3_GUSB2PHYCFG(0)));
   nabu_log_hex("dwc3:dsts=", rd(DWC3_DSTS));
