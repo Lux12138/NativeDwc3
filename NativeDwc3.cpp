@@ -240,6 +240,9 @@ static bool rpmhUsbPhyRails(void)
   if (rpmhRead(l5 + 0x0, &v)) { nabu_log_hex("rpmh:l5v=", v); }
   if (rpmhRead(l5 + 0x4, &v)) { nabu_log_hex("rpmh:l5e=", v); }
   if (rpmhRead(l2 + 0x4, &v)) { nabu_log_hex("rpmh:l2e=", v); }
+  if (rpmhRead(l2 + 0x0, &v)) { nabu_log_hex("rpmh:l2v=", v); }
+  if (rpmhRead(l12 + 0x0, &v)) { nabu_log_hex("rpmh:l12v=", v); }
+  if (rpmhRead(xo, &v)) { nabu_log_hex("rpmh:xov=", v); }
   nabu_log_puts(ok ? "rpmh:rails-ok\n" : "rpmh:rails-fail\n");
   return ok;
 }
