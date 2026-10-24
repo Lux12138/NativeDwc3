@@ -140,9 +140,11 @@ static int dwc3Bringup(void)
   g_bringup_result = 0;
   nabu_log_puts("dwc3:start\n");
 
-  int enable = 0, init = 0;
-  PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
-  PE_parse_boot_argn("nabu-usb-init", &init, sizeof(init));
+  /* Default on: PE_parse_boot_argn returns false here for names added after boot
+   * (sheng-log behaved the same), so the boot-arg is only honoured to disable. */
+  int enable = 1, init = 0;
+  (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
+  (void)PE_parse_boot_argn("nabu-usb-init", &init, sizeof(init));
   if (!enable) {
     nabu_log_puts("dwc3:off\n");
     nabu_mark_text("dwc3:off", 2100);
