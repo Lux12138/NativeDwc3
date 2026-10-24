@@ -804,22 +804,8 @@ static int dwc3Bringup(void)
       nabu_log_hex("tlmm:io=", (g << 16) | (p[1] & 0x3u));
     }
   }
-  // The FSA4480 (Type-C analog switch) sits on i2c@890000 at 0x43, and its USB
-  // mode is an I2C write (SWITCH_CONTROL=0x18, SWITCH_SETTINGS=0x98) that the
-  // chip does not default to. Before writing an I2C driver, check what the SE is
-  // currently programmed as: GENI_FW_REVISION_RO (0x68) carries the protocol.
-  {
-    OSSharedPtr<IOMemoryMap> qupKeep;
-    volatile uint32_t *q = reinterpret_cast<volatile uint32_t *>(
-      mapPhys(0x08900000ULL, 0x1000, qupKeep));
-    if (q == nullptr) {
-      nabu_log_puts("qup:map-fail\n");
-    } else {
-      nabu_log_hex("qup:fwrev=", q[0x68 / 4]);
-      nabu_log_hex("qup:status=", q[0x40 / 4]);
-      nabu_log_hex("qup:geni=", q[0x00 / 4]);
-    }
-  }
+  // QUP access removed: reading i2c@890000 without first enabling its GCC
+  // clocks (0x5200c bit6/7/11) stalls the AXI bus and wedges the board.
   if (g_phyInitMode) { (void)femtoPhyInit(); }
   // No settle delay of any kind. Both CNTPCT and IODelay are unusable this early
   // (the counter does not advance yet, so the loop never ends) and each attempt
