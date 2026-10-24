@@ -465,6 +465,16 @@ static int dwc3Bringup(void)
   // XBL already brought this PHY up for fastboot. Do not reset or reprogram it here:
   // the femto sequence leaves the AHB port answering only bus-default data.
   g_phy = reinterpret_cast<volatile uint32_t *>(mapPhys(QUSB2_BASE, 0x1000, g_phyKeep));
+  {
+    OSSharedPtr<IOMemoryMap> scanKeep;
+    volatile uint32_t *scan =
+      reinterpret_cast<volatile uint32_t *>(mapPhys(0x088E0000ULL, 0x10000, scanKeep));
+    if (scan != nullptr) {
+      for (unsigned page = 0; page < 16; ++page) {
+        nabu_log_hex("physcan=", scan[page * 1024]);
+      }
+    }
+  }
   if (g_phy != nullptr) {
     nabu_log_hex("phy:keep0=", phyRd(FEMTO_CFG0));
     nabu_log_hex("phy:keep5c=", phyRd(FEMTO_COMMON2));
