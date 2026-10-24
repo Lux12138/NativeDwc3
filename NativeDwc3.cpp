@@ -466,6 +466,27 @@ static bool usbEventInit(void)
   int smmuMap = 0;
   (void)PE_parse_boot_argn("nabu-usb-smmu", &smmuMap, sizeof(smmuMap));
   nabu_log_hex("usb:smmu-en=", smmuMap);
+  // Read-only: does the firmware already carry a stream entry for the USB SID?
+  // If it does, the event ring can DMA through it and no context bank of ours is
+  // needed; if it does not, enabling the ring would fault instead.
+  {
+    OSSharedPtr<IOMemoryMap> smmuKeep;
+    volatile uint32_t *smmu =
+      reinterpret_cast<volatile uint32_t *>(mapPhys(0x15000000ULL, 0x8000, smmuKeep));
+    if (smmu == nullptr) {
+      nabu_log_puts("smmu:map-fail\n");
+    } else {
+      nabu_log_hex("smmu:idr0=", smmu[0x20 / 4]);
+      for (unsigned i = 0; i < 128; ++i) {
+        uint32_t smr = smmu[(0x800 / 4) + i];
+        if (!(smr & 0x80000000u)) { continue; }
+        if ((smr & 0xffffu) != 0x140u) { continue; }
+        nabu_log_hex("smmu:sid140smr=", smr);
+        nabu_log_hex("smmu:sid140s2cr=", smmu[(0xc00 / 4) + i]);
+        break;
+      }
+    }
+  }
   if (smmuMap) {
     (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
   }
