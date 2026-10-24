@@ -785,9 +785,21 @@ static int dwc3Bringup(void)
   // SOUTH, usb_phy} and usb_phy is func 2). The bootloader hands it over on
   // func 1, which is why the PHY's VBUS side never sees the cable. Switch it
   // back to usb_phy before touching the PHY.
-  // No TLMM access here: writing GPIO 38 on a guessed address/function wedged the
-  // board, and reads of the TLMM window have not been proven safe either. The
-  // pin work needs the pinctrl register layout confirmed first.
+  // TLMM read-only: pins 113 and 123 are the `usb2phy_ac` function, the only
+  // other USB2-PHY-related pinmux on this SoC. Reading TLMM is safe; only the
+  // writes wedged the board (and are not done here).
+  {
+    static const unsigned kPins[] = { 113u, 123u };
+    for (unsigned i = 0; i < 2; ++i) {
+      const unsigned g = kPins[i];
+      OSSharedPtr<IOMemoryMap> pinKeep;
+      volatile uint32_t *p = reinterpret_cast<volatile uint32_t *>(
+        mapPhys(0x03000000ULL + 0x1000ULL * g, 0x1000, pinKeep));
+      if (p == nullptr) { continue; }
+      nabu_log_hex("tlmm:cfg=", (g << 16) | (p[0] & 0xffffu));
+      nabu_log_hex("tlmm:io=", (g << 16) | (p[1] & 0x3u));
+    }
+  }
   if (g_phyInitMode) { (void)femtoPhyInit(); }
   // No settle delay of any kind. Both CNTPCT and IODelay are unusable this early
   // (the counter does not advance yet, so the loop never ends) and each attempt
