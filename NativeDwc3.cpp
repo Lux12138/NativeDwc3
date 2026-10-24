@@ -518,26 +518,21 @@ static void usbPollEvents(void)
   nabu_log_hex("usb:evtcnt2=", count);
   unsigned offset = 0;
   while (offset + 4 <= count) {
+    // DWC3 event TRBs: type lives in bits[7:1] and a device event is 4 bytes.
+    // The old decode (type = word & 0xff, offset += 8) read the wrong fields and
+    // skipped half the ring, so every event looked like type 0 / devt 0.
     uint32_t ev = g_evt[offset / 4];
-    uint32_t type = ev & 0xffu;
-    nabu_log_hex("usb:type=", type);
-    if (type == 0) {                        // device event
-      nabu_log_hex("usb:devt=", g_evt[offset / 4 + 1] & 0xffffu);
-      nabu_log_hex("usb:link=", g_evt[offset / 4 + 1] >> 16);
-      offset += 8;
-    } else if (type == 6) {                 // endpoint event
-      uint32_t ep = g_evt[offset / 4 + 1];
-      uint32_t status = g_evt[offset / 4 + 2];
-      nabu_log_hex("usb:ep=", ep & 0xffu);
-      nabu_log_hex("usb:estatus=", status & 0xffffu);
-      nabu_log_hex("usb:param=", g_evt[offset / 4 + 3]);
-      if ((status & 0xffu) == 1) {          // SETUP packet follows
-        nabu_log_hex("usb:setup0=", g_evt[offset / 4 + 4]);
-        nabu_log_hex("usb:setup1=", g_evt[offset / 4 + 5]);
-        offset += 16;
-      } else {
-        offset += 8;
-      }
+    uint32_t type = (ev >> 1) & 0x3fu;
+    nabu_log_hex("usb:ev0=", ev);
+    if (type == 0) {                        // device event, 4 bytes
+      nabu_log_hex("usb:devt=", (ev >> 9) & 0x7fu);   // 1 disc, 2 conn-done, 3 link
+      nabu_log_hex("usb:link=", (ev >> 17) & 0xfu);
+      offset += 4;
+    } else if (type == 6) {                 // endpoint event (+8 if SETUP)
+      nabu_log_hex("usb:ep1=", g_evt[offset / 4 + 1]);
+      nabu_log_hex("usb:ep2=", g_evt[offset / 4 + 2]);
+      nabu_log_hex("usb:ep3=", g_evt[offset / 4 + 3]);
+      offset += 12;
     } else {
       offset += 4;
     }
