@@ -340,6 +340,22 @@ static bool femtoPhyInit(void)
   nabu_log_hex("phy:cfg0=", phyRd(FEMTO_CFG0));
   // CFG0 reads 0 on a healthy but uninitialised femto PHY; COMMON2 (0x5c)
   // returning 0xc1c1c1c1 is its reset value. Do not bail out here.
+  // QCOM's phy-msm-snps-hs reads the eFuse RCAL code first: when it is zero the PHY
+  // must use the internal resistor (RTUNE_SEL). mainline has neither, which is why
+  // the D+ pull-up never appeared.
+  {
+    OSSharedPtr<IOMemoryMap> rcalKeep;
+    volatile uint32_t *rcal =
+      reinterpret_cast<volatile uint32_t *>(mapPhys(0x007801F8ULL & ~0xFFFULL, 0x1000, rcalKeep));
+    uint32_t rcalCode = 0;
+    if (rcal != nullptr) {
+      rcalCode = rcal[(0x1F8 & 0xFFF) / 4];
+    }
+    nabu_log_hex("phy:rcal=", rcalCode);
+    if (rcalCode == 0) {
+      phyWrMask(0xb4, 1u << 0, 1u << 0);           // RTUNE_SEL
+    }
+  }
   phyWrMask(FEMTO_CFG0, 1u << 1, 1u << 1);        // CMN_CTRL_OVERRIDE_EN
   phyWrMask(FEMTO_UTMI_CTRL5, 1u << 1, 1u << 1);  // POR
   phyWrMask(FEMTO_COMMON0, 0x70, 0);              // FSEL = 0
