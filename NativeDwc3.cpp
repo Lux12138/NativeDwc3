@@ -533,6 +533,40 @@ static int dwc3Bringup(void)
       reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x1100, spmiKeep));
     if (spmi != nullptr) {
       nabu_log_hex("spmi:ver=", spmi[0]);
+      // QCOM's table walk: each level returns an 8-bit result, not one bit.
+      //   IS_1: result bits 0..7, flag bit 8
+      //   IS_0: result bits 9..16, flag bit 17
+      for (unsigned sid = 2; sid <= 4; ++sid) {
+        unsigned apid = 0, valid = 1;
+        const unsigned ppid = (sid << 8) | 0x10; // charger window, register high byte
+        for (unsigned i = 0; i < 16 && valid; ++i) {
+          uint32_t val = spmi[(0xB00 / 4) + i];
+          if (ppid & (1u << (15 - i))) {
+            apid = (apid << 8) | (val & 0xffu);
+            valid = (val >> 8) & 1u;
+          } else {
+            apid = (apid << 8) | ((val >> 9) & 0xffu);
+            valid = (val >> 17) & 1u;
+          }
+        }
+        nabu_log_hex("spmi:sid=", sid);
+        nabu_log_hex("spmi:apid=", apid);
+        nabu_log_hex("spmi:valid=", valid);
+        if (!valid) {
+          continue;
+        }
+        const unsigned base = (0x80u * apid) / 4u;
+        spmi[base + 0] = (15u << 27) | (0x10u << 4);
+        unsigned done = 0;
+        for (unsigned i = 0; i < 20000; ++i) {
+          if (spmi[base + 2] & 1u) { done = 1; break; }
+          __asm__ volatile("yield" ::: "memory");
+        }
+        nabu_log_hex("spmi:done=", done);
+        if (done) {
+          nabu_log_hex("spmi:sts=", spmi[base + 6] & 0xffu);
+        }
+      }
     }
   }
   (void)rpmhUsbPhyRails();
