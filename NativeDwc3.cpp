@@ -501,22 +501,23 @@ static int dwc3Bringup(void)
       reinterpret_cast<volatile uint32_t *>(mapPhys(0x0C440000ULL, 0x1100, spmiKeep));
     if (spmi != nullptr) {
       nabu_log_hex("spmi:ver=", spmi[0]);
-      // Brute force: skip the mapping table entirely. The V5 observer channel for
-      // (EE 0, APID n) is 0x80 * n bytes; issue a 1-byte READ of register 0x10 to
-      // each and keep the ones that answer with something plausible.
-      for (unsigned apid = 0; apid < 64; ++apid) {
-        const unsigned base = (0x80u * apid) / 4u;
-        spmi[base + 0] = (15u << 27) | (0x10u << 4);
-        unsigned done = 0;
-        for (unsigned i = 0; i < 20000; ++i) {
-          if (spmi[base + 2] & 1u) { done = 1; break; }
-          __asm__ volatile("yield" ::: "memory");
+      for (unsigned ee = 0; ee < 2; ++ee) {
+        unsigned hits = 0;
+        for (unsigned apid = 0; apid < 64; ++apid) {
+          const unsigned base = (0x10000u * ee + 0x80u * apid) / 4u;
+          spmi[base + 0] = (15u << 27) | (0x10u << 4);
+          unsigned done = 0;
+          for (unsigned i = 0; i < 20000; ++i) {
+            if (spmi[base + 2] & 1u) { done = 1; break; }
+            __asm__ volatile("yield" ::: "memory");
+          }
+          if (done) {
+            ++hits;
+            nabu_log_hex("spmi:a=", (ee << 8) | apid);
+            nabu_log_hex("spmi:d=", spmi[base + 6] & 0xffu);
+          }
         }
-        uint32_t data = spmi[base + 6] & 0xffu;
-        if (done && data != 0x00u && data != 0xffu) {
-          nabu_log_hex("spmi:a=", apid);
-          nabu_log_hex("spmi:d=", data);
-        }
+        nabu_log_hex("spmi:hits=", hits);
       }
     }
   }
