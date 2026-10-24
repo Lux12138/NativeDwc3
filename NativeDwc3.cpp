@@ -335,6 +335,14 @@ static bool femtoPhyInit(void)
     return false;
   }
   nabu_log_hex("phy:r0=", phyRd(0x0));
+  {
+    // Decisive: flip one COMMON0 bit and read it back. If the value does not change
+    // the AHB port is not really reaching the PHY.
+    uint32_t c0 = phyRd(FEMTO_COMMON0);
+    phyWr(FEMTO_COMMON0, c0 ^ 0x80u);
+    nabu_log_hex("phy:wtest=", phyRd(FEMTO_COMMON0));
+    phyWr(FEMTO_COMMON0, c0);
+  }
   nabu_log_hex("phy:r4=", phyRd(0x4));
   nabu_log_hex("phy:common2=", phyRd(FEMTO_COMMON2));
   nabu_log_hex("phy:cfg0=", phyRd(FEMTO_CFG0));
