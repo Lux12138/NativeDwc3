@@ -28,6 +28,7 @@
 #define GCC_AGGRE_USB3_PRIM_AXI_CLK   0x0f07c
 #define GCC_CFG_NOC_USB3_PRIM_AXI_CLK 0x0f078
 #define GCC_USB3_PRIM_CLKREF_CLK      0x8c008 // gcc_usb3_prim_clkref_clk
+#define GCC_USB3_SEC_CLKREF_CLK       0x8c028 // gcc_usb3_sec_clkref_clk: what usb_1 uses
 #define GCC_BRANCH_ENABLE_BIT         0x1u
 #define GCC_BRANCH_CLK_OFF            (1u << 31)
 

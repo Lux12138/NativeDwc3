@@ -89,8 +89,9 @@ static unsigned gccUsbPowerOn(void)
     return 0xfe;
   }
 
-  // 19.2 MHz reference to the PHY PLL.
-  gwr(GCC_USB3_PRIM_CLKREF_CLK, grd(GCC_USB3_PRIM_CLKREF_CLK) | GCC_BRANCH_ENABLE_BIT);
+  // 19.2 MHz reference to the PHY PLL. The usb_1 glue node names
+  // GCC_USB3_SEC_CLKREF_CLK (0x8c028), not the PRIM one.
+  gwr(GCC_USB3_SEC_CLKREF_CLK, grd(GCC_USB3_SEC_CLKREF_CLK) | GCC_BRANCH_ENABLE_BIT);
 
   // Master source: 200 MHz = GPLL0_OUT_MAIN / 3. Only configure it when the
   // register reads back something that is not already that setting -- boot may
@@ -124,6 +125,11 @@ static unsigned gccUsbPowerOn(void)
       ++failed;
     }
   }
+
+  // Release the controller reset (usb_1 glue: resets = <&gcc GCC_USB30_PRIM_BCR>).
+  // Without this the core answers reads with bus default data, not GSNPSID.
+  gwr(GCC_USB30_PRIM_BCR, 0x1);
+  (void)waitMask(g_gcc + GCC_USB30_PRIM_BCR / 4, 0x1, 0, 100000);
 
   // Release the QUSB2 PHY from reset.
   gwr(GCC_QUSB2PHY_PRIM_BCR, 0x1);
