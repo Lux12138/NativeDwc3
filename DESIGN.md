@@ -579,3 +579,40 @@ PHY 数字寄存器完全在线（写入/读回一致），但所有能让 D+ �
 没有电气效果。剩下的解释只有 **PHY 的模拟电源（vdda18/vdda33）在 XNU 下
 没有真正到位**。RPMh 的 `l5v/l12v/l2v` 回读只是 RSC 的命令回执，不等于
 PMIC 输出；要证实只能通过 SPMI 读 PM8150 的 LDO 状态。
+
+---
+
+# 2026-10-25 04:00 — run18..run25：连上了，但 DMA 落点不对
+
+## 复现方法（稳定可比）
+
+- 关掉自建 SMMU bank（`nabu-usb-smmu` 默认 0），用固件已有的 stream 0x140 条目。
+- PHY 按厂商 `msm_hsphy_init()` 顺序初始化。
+- `QSCRATCH HS_PHY_CTRL |= UTMI_OTG_VBUS_VALID`（VBUS 软件覆盖），再 `DCTL.RUN_STOP=1`。
+- 事件环地址回读确认写入成功（`GEVNTADRLO=0xcaa15000`、`GEVNTSIZ=0x1000`）。
+
+## 结果（run18/19/21/22/24/25 一致）
+
+    dwc3:dsts-run = 0x00020001   CONNECTSPD=1(HS)、USBLNKST=0 (U0)
+    GEVNTCOUNT    = 0xc          （之前一直是 0）
+    事件内容      = 0            （缓冲区没被写过；写入的哨兵 0xdeadbeef 原样保留）
+    SMMU GFSR     = 0            （没有 translation fault）
+
+结论：**核心已经进入连接状态并产生事件，但事件 DMA 落在别处**——
+给 `GEVNTADR` 的物理地址被 SMMU 当成 I/O 虚拟地址翻译掉了（stream 0x140 的
+S2CR 读回 3，不是 ARM 文档里的 bypass=2）。
+
+## 下一步（未执行，等板子）
+
+1. 只读：确认 stream 0x140 对应的 context bank 配置（CBAR/CBA2R/SCTLR）。
+2. 若确认是 translation：把**仅这一条** S2CR 改成 bypass（type 2），写前记录原值、
+   写后读回，失败则写回。**不新占 context bank**（那是卡 `IOFindBSRoot` 的红线）。
+3. PC 侧用 `pnputil` 轮询全程监视；能出现设备后再做 EP0 描述符。
+
+## 工程侧必须遵守（今晚踩过的坑）
+
+- 构建后必须看到 `kernel regenerated` 才算成功；`-Werror` 会静默打断链接，
+  打包会拿旧内核（`nabuCnt` 未使用那一次就是这样）。
+- 工具调用即使显示被拒绝，进程也可能已经启动并跑完（run23 因此真的刷了板子）。
+  因此**不要发送任何包含 reboot/flash 的命令**，除非当场得到明确许可。
+- 板子停在 fastboot 超过超时时间会走正常启动并卡小米 logo。
