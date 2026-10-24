@@ -508,10 +508,10 @@ static bool usbEventInit(void)
 static void usbPollEvents(void)
 {
   uint32_t count = rd(DWC3_GEVNTCOUNT(0));
-  nabu_log_hex("usb:evtcnt2=", count);
   if (count == 0) {
     return;
   }
+  nabu_log_hex("usb:evtcnt2=", count);
   unsigned offset = 0;
   while (offset + 4 <= count) {
     uint32_t ev = g_evt[offset / 4];
@@ -785,10 +785,13 @@ static int dwc3Bringup(void)
   nabu_log_hex("phy:term2=", phyRd(FEMTO_UTMI_CTRL0));
   nabu_log_flush(0);
   if (events) {
-    for (unsigned i = 0; i < 500000; ++i) { __asm__ volatile("yield" ::: "memory"); }
-    usbPollEvents();
-    // The connect is asynchronous; take a second look before the log is written.
-    for (unsigned i = 0; i < 2000000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+    // The host resets the port and asks for descriptors within milliseconds of
+    // the pull-up appearing. Keep the core running and poll the event ring for
+    // ~10 s so the connection event and the first SETUP packet land in the log.
+    for (unsigned round = 0; round < 100; ++round) {
+      for (unsigned i = 0; i < 200000; ++i) { __asm__ volatile("yield" ::: "memory"); }
+      usbPollEvents();
+    }
     nabu_log_hex("dwc3:dsts2=", rd(DWC3_DSTS));
     nabu_log_hex("dwc3:dctl3=", rd(DWC3_DCTL));
     nabu_log_hex("dwc3:osts2=", rd(DWC3_OSTS));
