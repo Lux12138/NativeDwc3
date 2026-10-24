@@ -383,6 +383,10 @@ static int dwc3Bringup(void)
     return -1;
   }
   nabu_log_hex("dwc3:cap=", rd(0x0));
+  nabu_log_hex("dwc3:gsbus=", rd(DWC3_GSBUSCFG0));
+  nabu_log_hex("dwc3:gctl=", rd(DWC3_GCTL));
+  nabu_log_hex("dwc3:guid=", rd(DWC3_GUID));
+  nabu_log_hex("dwc3:hw0=", rd(DWC3_GHWPARAMS0));
   const uint32_t sid = rd(DWC3_GSNPSID);
   nabu_log_hex("dwc3:sid=", sid);
   const uint32_t family = sid & DWC3_GSNPSID_MASK;
