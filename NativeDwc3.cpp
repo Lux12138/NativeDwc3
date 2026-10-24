@@ -741,6 +741,27 @@ static int dwc3Bringup(void)
     gwr(GCC_QUSB2PHY_PRIM_BCR, 0x0);
   }
   g_phy = reinterpret_cast<volatile uint32_t *>(mapPhys(QUSB2_BASE, 0x1000, g_phyKeep));
+  // GPIO 38 is the only pin whose TLMM function is "usb_phy"
+  // (pinctrl-sm8150.c: PINGROUP(38, SOUTH, usb_phy, ...), so funcs = {gpio,
+  // SOUTH, usb_phy} and usb_phy is func 2). The bootloader hands it over on
+  // func 1, which is why the PHY's VBUS side never sees the cable. Switch it
+  // back to usb_phy before touching the PHY.
+  {
+    OSSharedPtr<IOMemoryMap> tlmmKeep;
+    // GPIO 38's control register sits at TLMM + 38 * 0x1000.
+    volatile uint32_t *cfg = reinterpret_cast<volatile uint32_t *>(
+      mapPhys(0x03D38000ULL, 0x1000, tlmmKeep));
+    if (cfg == nullptr) {
+      nabu_log_puts("tlmm:38-map-fail\n");
+    } else {
+      nabu_log_hex("tlmm:38old=", cfg[0]);
+      uint32_t v = (cfg[0] & ~0x7u) | 2u;   // func = usb_phy
+      cfg[0] = v;
+      __asm__ volatile("dsb sy" ::: "memory");
+      nabu_log_hex("tlmm:38new=", cfg[0]);
+      nabu_log_hex("tlmm:38io=", cfg[1]);
+    }
+  }
   if (g_phyInitMode) { (void)femtoPhyInit(); }
   // No settle delay of any kind. Both CNTPCT and IODelay are unusable this early
   // (the counter does not advance yet, so the loop never ends) and each attempt
