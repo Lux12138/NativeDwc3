@@ -731,28 +731,18 @@ static void ep0Data(unsigned dep, unsigned bufOff, uint32_t len)
 {
   g_ep0_stage = 1;
   g_ep0_armed = len;
-  if (dep != 0 && len > 64) {
-    // The vendor hands the core one TRB for the whole IN length, which wedged
-    // this core on the first multi-packet reply (the 67-byte config descriptor).
-    // Chain one TRB per maxpacket instead: the core then only has to send each
-    // packet as it is described and never splits a TRB itself.
-    const unsigned packets = (len + 63) / 64;
-    g_ep0Trbs = packets;
-    for (unsigned i = 0; i < packets; ++i) {
-      const uint32_t sent = i * 64;
-      const uint32_t chunk = len - sent > 64 ? 64 : len - sent;
-      ep0TrbAt(i, g_ep0Phys + bufOff + sent, chunk, DWC3_TRBCTL_CONTROL_DATA,
-               i + 1 == packets);
-    }
-  } else {
-    ep0TrbAt(0, g_ep0Phys + bufOff, len, DWC3_TRBCTL_CONTROL_DATA, true);
-    g_ep0Trbs = 1;
-  }
+  // One TRB for the whole data stage, exactly like the reference: control data
+  // goes through dwc3_prepare_one_trb_linear()'s IN branch, which calls
+  // dwc3_prepare_one_trb(dep, req, chain = 0) with req->length. The core, not the
+  // driver, splits that into maxpacket-sized packets. Chaining one TRB per packet
+  // is something neither Linux nor the vendor ever asks this core to do on ep0.
+  ep0Trb(g_ep0Phys + bufOff, len, DWC3_TRBCTL_CONTROL_DATA);
   // A wedge inside STARTTRANSFER leaves no event behind, so the arm and its
   // command status must already be on the medium before the core touches DRAM.
   usbStep(3);
   nabu_log_hex("usb:data-arm=", (static_cast<unsigned>(dep) << 24) |
                                 (g_ep0Trbs << 20) | len);
+  (void)nabu_log_flush_tail();
   usbStep(4);
   const int st = ep0Start(dep);
   usbStep(st == 0 ? 5 : 15);
@@ -959,8 +949,8 @@ static void usbHandleDep(uint32_t ev)
   if (g_ep0_stage == 0) {
     ep0Setup();
   } else if (g_ep0_stage == 1) {
-    // A chained IN stage reports TRBSTS on the TRB the core stopped at, so poll
-    // every entry instead of only slot 0 the way the one-TRB ring could.
+    // The data stage is one TRB, so slot 0's residual length is the whole answer;
+    // the loop stays because TRBSTS_SETUP_PENDING is also reported there.
     uint32_t last = 0;
     bool pending = false;
     for (unsigned i = 0; i < g_ep0Trbs; ++i) {
