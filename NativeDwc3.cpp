@@ -36,6 +36,18 @@ extern "C" void nabu_log_hex(const char *label, unsigned long long value);
  * probe already uses successfully. */
 extern "C" void nabu_log_flush(int is_panic);
 extern "C" int nabu_log_flush_tail(void);
+/* Milestone probe: publish the ring synchronously so the window itself names the
+ * last stage the bring-up reached. The previous runs could not tell a wedged
+ * bring-up from a dead log thread because every write after the baseline was
+ * silent; here each stage lands on the medium before the next register touch. */
+extern "C" int nabu_log_flush_nowait(void);
+static void logProbe(const char *tag)
+{
+  nabu_log_puts(tag);
+  if (!nabu_log_flush_nowait()) {
+    nabu_log_puts("p:flush-fail\n");
+  }
+}
 
 /* Read by the periodic log writer in NativeUfs: 1 while the bring-up may still be
  * inside this file, and a counter that moves once per enumeration round. A window
@@ -44,6 +56,16 @@ extern "C" int nabu_log_flush_tail(void);
 extern "C" {
 volatile unsigned int gDwc3Window = 0;
 volatile unsigned int gDwc3Ticks = 0;
+/* Ticks move even when the controller is wedged -- the poll loop keeps spinning --
+ * so the watchdog in NativeUfs needs the event count instead: an event is progress,
+ * a spin is not. gDwc3Setups separates "host never talked to us" from "host talked
+ * and then we stopped answering". */
+volatile unsigned int gDwc3Events = 0;
+volatile unsigned int gDwc3Setups = 0;
+/* Set by the watchdog just before it resets the board, cleared by the log
+ * writer once it has taken the snapshot. This is the only way the ring gets
+ * published while the DWC3 owns UFS. */
+volatile unsigned int gFlushRequested = 0;
 }
 
 #define super IOService
@@ -556,6 +578,7 @@ static bool usbEventInit(void)
     (void)native_smmu_bypass(0x140, g_evtPhys, 4096);
   }
   nabu_log_puts("usb:smmu-done\n");
+  logProbe("p:evt\n");
   wr(DWC3_GEVNTADRLO(0), static_cast<uint32_t>(g_evtPhys));
   wr(DWC3_GEVNTADRHI(0), static_cast<uint32_t>(g_evtPhys >> 32));
   wr(DWC3_GEVNTSIZ(0), 4096);
@@ -702,21 +725,37 @@ static int ep0Start(unsigned dep)
                static_cast<uint32_t>(g_ep0Phys), 0);
 }
 
+// HWO is deliberately left clear here. The core is free to fetch the head TRB the
+// instant HWO goes up and, with CHN set, will walk straight into the next entry --
+// which for a multi-packet reply is still the previous transfer's TRB (HWO clear).
+// A core retrying that fetch never releases the bus, so the CPU stops dead inside
+// this function: that is the shape of every run that ended on the config descriptor.
 static void ep0TrbAt(unsigned slot, uint64_t buf, uint32_t size, uint32_t type, bool last)
 {
   volatile uint32_t *t = g_ep0 + slot * 4u;
   t[0] = static_cast<uint32_t>(buf);
   t[1] = static_cast<uint32_t>(buf >> 32);
   t[2] = size;
-  uint32_t ctrl = type | DWC3_TRB_CTRL_HWO | DWC3_TRB_CTRL_ISP_IMI;
+  uint32_t ctrl = type | DWC3_TRB_CTRL_ISP_IMI;
   ctrl |= last ? (DWC3_TRB_CTRL_IOC | DWC3_TRB_CTRL_LST) : DWC3_TRB_CTRL_CHN;
   t[3] = ctrl;
+}
+
+// Hands the finished chain to the core: every entry is on DRAM before the head
+// becomes valid, so a chain walk can never see a half-written or stale entry.
+static void ep0TrbHead(void)
+{
+  __asm__ volatile("dsb sy" ::: "memory");
+  volatile uint32_t *t = g_ep0;
+  t[3] = t[3] | DWC3_TRB_CTRL_HWO;
+  __asm__ volatile("dsb sy" ::: "memory");
 }
 
 static void ep0Trb(uint64_t buf, uint32_t size, uint32_t type)
 {
   g_ep0Trbs = 1;
   ep0TrbAt(0, buf, size, type, true);
+  ep0TrbHead();
 }
 
 static void ep0ArmSetup(void)
@@ -731,18 +770,33 @@ static void ep0Data(unsigned dep, unsigned bufOff, uint32_t len)
 {
   g_ep0_stage = 1;
   g_ep0_armed = len;
-  // One TRB for the whole data stage, exactly like the reference: control data
-  // goes through dwc3_prepare_one_trb_linear()'s IN branch, which calls
-  // dwc3_prepare_one_trb(dep, req, chain = 0) with req->length. The core, not the
-  // driver, splits that into maxpacket-sized packets. Chaining one TRB per packet
-  // is something neither Linux nor the vendor ever asks this core to do on ep0.
-  ep0Trb(g_ep0Phys + bufOff, len, DWC3_TRBCTL_CONTROL_DATA);
+  if (dep != 0 && len > 64) {
+    // The vendor hands the core one TRB for the whole IN length, which wedged
+    // this core on the first multi-packet reply (the 67-byte config descriptor).
+    // Chain one TRB per maxpacket instead: the core then only has to send each
+    // packet as it is described and never splits a TRB itself.
+    const unsigned packets = (len + 63) / 64;
+    g_ep0Trbs = packets;
+    for (unsigned i = 0; i < packets; ++i) {
+      const uint32_t sent = i * 64;
+      const uint32_t chunk = len - sent > 64 ? 64 : len - sent;
+      ep0TrbAt(i, g_ep0Phys + bufOff + sent, chunk, DWC3_TRBCTL_CONTROL_DATA,
+               i + 1 == packets);
+    }
+  } else {
+    ep0TrbAt(0, g_ep0Phys + bufOff, len, DWC3_TRBCTL_CONTROL_DATA, true);
+    g_ep0Trbs = 1;
+  }
+  // Bracket the handoff: these two lines land before HWO, so a run that stops here
+  // separates "died programming the chain" from "died with the core owning it".
+  nabu_log_hex("usb:trbc=", g_ep0[3]);
+  if (g_ep0Trbs > 1) { nabu_log_hex("usb:trbc2=", g_ep0[7]); }
+  ep0TrbHead();
   // A wedge inside STARTTRANSFER leaves no event behind, so the arm and its
   // command status must already be on the medium before the core touches DRAM.
   usbStep(3);
   nabu_log_hex("usb:data-arm=", (static_cast<unsigned>(dep) << 24) |
                                 (g_ep0Trbs << 20) | len);
-  (void)nabu_log_flush_tail();
   usbStep(4);
   const int st = ep0Start(dep);
   usbStep(st == 0 ? 5 : 15);
@@ -820,16 +874,18 @@ static void ep0Setup(void)
   const uint16_t len = (w1 >> 16) & 0xffff;
 
   ++g_ep0Setups;
+  gDwc3Setups = gDwc3Setups + 1;
   usbStep(2);
   nabu_mark_num("req:", static_cast<uint32_t>(rt) | (static_cast<uint32_t>(req) << 8), USB_REQ_Y);
   nabu_mark_num("len:", len, USB_LEN_Y);
   nabu_log_hex("usb:setup=", static_cast<uint32_t>(rt) | (static_cast<uint32_t>(req) << 8));
   nabu_log_hex("usb:setupw=", (static_cast<uint32_t>(val) << 16) | idx);
   nabu_log_hex("usb:setupl=", len);
-  // The setup bytes are the one thing we cannot recover after a wedge: persist
-  // the ring tail before acting on them. A few milliseconds here, and the host's
-  // control transfer still has seconds left.
-  (void)nabu_log_flush_tail();
+  /* No UFS access on this path. Run 75 ended on this exact line with no
+   * data-arm after it: the snapshot was the only thing this path did before
+   * arming, so it wedged inside the handshake the host is timing and left
+   * nabu_log_busy set, muting every later flush. The watchdog now asks the
+   * log thread for a snapshot and resets the board either way. */
   g_ep0_three = len != 0;
   g_ep0_in = g_ep0_three && (rt & 0x80) != 0;
   g_ep0_zlp = false;
@@ -904,6 +960,11 @@ static void ep0Setup(void)
     ep0Restart();
     return;
   }
+  // Last line before the data stage is armed, with the direction and length this
+  // side chose: the host asked for 255 bytes of config descriptor and the reply is
+  // 67, so this is the only record of what was about to be handed to the core.
+  nabu_log_hex("usb:resp=", (static_cast<unsigned>(g_ep0_in) << 17) |
+                            (static_cast<unsigned>(g_ep0_three) << 16) | resp);
   if (resp > len) { resp = len; }
 
   if (!g_ep0_three) {
@@ -949,8 +1010,8 @@ static void usbHandleDep(uint32_t ev)
   if (g_ep0_stage == 0) {
     ep0Setup();
   } else if (g_ep0_stage == 1) {
-    // The data stage is one TRB, so slot 0's residual length is the whole answer;
-    // the loop stays because TRBSTS_SETUP_PENDING is also reported there.
+    // A chained IN stage reports TRBSTS on the TRB the core stopped at, so poll
+    // every entry instead of only slot 0 the way the one-TRB ring could.
     uint32_t last = 0;
     bool pending = false;
     for (unsigned i = 0; i < g_ep0Trbs; ++i) {
@@ -1006,10 +1067,13 @@ static void usbPollEvents(void)
     while (left >= 4) {
       const uint32_t ev = g_evt[g_evtOff / 4];
       ++g_usbEvents;
+      gDwc3Events = gDwc3Events + 1;
       nabu_log_hex("usb:ev0=", ev);
-      // Same reason as in ep0Setup: whatever this event turns out to be, the
-      // ring must already be on the medium before the handler touches the core.
-      (void)nabu_log_flush_tail();
+      // No flush here. This used to write and sync 64 KiB of UFS before every
+      // single event, inside a handshake the host gives up on after ~5 s -- run 65
+      // wedged exactly there. The period counter above tells the writer thread in
+      // NativeUfs that something happened; it publishes the ring within 2 s, off
+      // this path, so a slow flush can delay the log but never the transfer.
       if (ev & 1u) {                            // device event: type[11:8], info[24:16]
         const unsigned type = (ev >> 8) & 0xf;
         const unsigned info = (ev >> 16) & 0x1ff;
@@ -1094,6 +1158,7 @@ static int dwc3Bringup(void)
   g_bringup_done = 1;
   nabu_log_puts("dwc3:start\n");
   nabu_log_puts("usb:marker\n");
+  logProbe("p:enter\n");
 
   int enable = 1, init = 1, keep = 0;
   (void)PE_parse_boot_argn("nabu-usb", &enable, sizeof(enable));
@@ -1410,10 +1475,18 @@ static int dwc3Bringup(void)
   // first SETUP must find a request waiting, or it times the transfer out and
   // suspends the port (run 54: U0 -> RxDetect -> U3, no SET_USB_RESET event).
   const bool ep0ok = events && ep0Init();
+  logProbe("p:ep0\n");
   // Firmware already carries a valid SMMU entry for this stream (run 17 read
   // SMR=0x80000140 with S2CR=3), so the event ring can DMA without us taking a
   // context bank. With the DMA path accounted for, assert the software VBUS
   // override exactly where dwc3-msm does it: before starting the gadget.
+  // dwc3_otg_start_peripheral() -> dwc3_override_vbus_status(true): HS_PHY_CTRL
+  // bit 20. The bootloader leaves SW_SESSVLD_SEL=1 with UTMI_OTG_VBUS_VALID=0, so
+  // the PHY takes session-valid from software and sees 0: no D+ pull-up, no host.
+  // Run 68 is the proof -- qs:hs=10100000, bus reset, three SETUPs, 13 events. The
+  // build that made this read-only (justified by the older AHB-lockup runs, which
+  // predate the PHY sequence) is the one that went back to zero events.
+  nabu_log_hex("qs:hs-pre2=", rd(QSCRATCH_HS_PHY_CTRL));
   wr(QSCRATCH_HS_PHY_CTRL, rd(QSCRATCH_HS_PHY_CTRL) | QSCRATCH_UTMI_OTG_VBUS_VALID);
   nabu_log_hex("qs:hs=", rd(QSCRATCH_HS_PHY_CTRL));
   nabu_log_hex("qs:osts-pre=", rd(DWC3_OSTS));  // The PMIC reports CDP, so run the vendor's DP pulse here -- before RUN_STOP,
@@ -1452,12 +1525,17 @@ static int dwc3Bringup(void)
   // register access never returns.
   if (ep0ok) {
     const unsigned kInner = 5000;
-    const unsigned kRounds = 30000;
+    const unsigned kRounds = 60000;
     const unsigned kReplug = kRounds / 3;
     unsigned replugs = 0;
     for (unsigned round = 0; round < kRounds; ++round) {
       for (unsigned i = 0; i < kInner; ++i) { __asm__ volatile("yield" ::: "memory"); }
       usbPollEvents();
+      // Ring only: the UFS writer thread publishes this off the control path,
+      // every 2 s, so the enumeration loop never blocks on a disk write.
+      if ((round % 1000) == 0) {
+        nabu_log_hex("p:round=", round);
+      }
       // Nothing has ever addressed us: the host sampled the port before the
       // pull-up existed, or gave up on its first attempt. Dropping and restoring
       // RUN_STOP makes it see a fresh connect. Vendor run_stop(1) redoes
@@ -1535,6 +1613,7 @@ static int dwc3Bringup(void)
   nabu_log_hex("dwc3:g2cfg=", rd(DWC3_GUSB2PHYCFG(0)));
   nabu_log_hex("dwc3:dsts=", rd(DWC3_DSTS));
   nabu_log_puts("dwc3:stage2-done\n");
+  logProbe("p:stage2\n");
   return 2;
 }
 
