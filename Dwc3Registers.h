@@ -99,4 +99,70 @@
 
 #define DWC3_OSTS             0xCC10
 
+// --- endpoint commands ----------------------------------------------------
+// DEPCMD layout: bits[5:0] command, bit8 CMDIOC, bit10 CMDACT, status[15:12].
+#define DWC3_DEPCMD_CMDACT        (1u << 10)
+#define DWC3_DEPCMD_CMDIOC        (1u << 8)
+#define DWC3_DEPCMD_STATUS(x)     (((x) >> 12) & 0x0Fu)
+#define DWC3_DEPCMD_PARAM(x)      ((x) << 16)
+
+#define DWC3_DEPCMD_SETEPCONFIG       0x01u
+#define DWC3_DEPCMD_SETTRANSFRESOURCE 0x02u
+#define DWC3_DEPCMD_SETSTALL          0x04u
+#define DWC3_DEPCMD_CLEARSTALL        0x05u
+#define DWC3_DEPCMD_STARTTRANSFER     0x06u
+#define DWC3_DEPCMD_ENDTRANSFER       0x08u
+#define DWC3_DEPCMD_DEPSTARTCFG       0x09u
+
+#define DWC3_DALEPENA_EP(n)       (1u << (n))
+
+// --- DEPCFG parameter 0 / 1 (gadget.h) ------------------------------------
+#define DWC3_DEPCFG_EP_TYPE(n)          (((n) & 0x3u) << 1)
+#define DWC3_DEPCFG_MAX_PACKET_SIZE(n)  (((n) & 0x7FFu) << 3)
+#define DWC3_DEPCFG_FIFO_NUMBER(n)      (((n) & 0x1Fu) << 17)
+#define DWC3_DEPCFG_XFER_COMPLETE_EN    (1u << 8)
+#define DWC3_DEPCFG_XFER_IN_PROGRESS_EN (1u << 9)
+#define DWC3_DEPCFG_XFER_NOT_READY_EN   (1u << 10)
+#define DWC3_DEPCFG_EP_NUMBER(n)        (((n) & 0x1Fu) << 25)
+#define DWC3_DEPXFERCFG_NUM_XFER_RES(n) ((n) & 0xFFFFu)
+
+// --- transfer requests ----------------------------------------------------
+// {bpl,bph,size,ctrl}; the core writes back the remaining size and TRBSTS.
+#define DWC3_TRB_CTRL_HWO         (1u << 0)
+#define DWC3_TRB_CTRL_LST         (1u << 1)
+#define DWC3_TRB_CTRL_CHN         (1u << 2)
+#define DWC3_TRB_CTRL_ISP_IMI     (1u << 10)
+#define DWC3_TRB_CTRL_IOC         (1u << 11)
+#define DWC3_TRB_CTRL_CSP         (1u << 3)
+#define DWC3_TRB_SIZE_MASK        0x00FFFFFFu
+#define DWC3_TRB_SIZE_TRBSTS(x)   (((x) >> 28) & 0xFu)
+#define DWC3_TRBSTS_SETUP_PENDING 2u
+
+// TRBCTL occupies ctrl[9:4]; using the raw type number here leaves type 0,
+// which the core completes without transferring anything.
+#define DWC3_TRB_CTRL_TRBCTL(n)     (((n) & 0x3Fu) << 4)
+#define DWC3_TRBCTL_NORMAL          DWC3_TRB_CTRL_TRBCTL(1)
+#define DWC3_TRBCTL_CONTROL_SETUP   DWC3_TRB_CTRL_TRBCTL(2)
+#define DWC3_TRBCTL_CONTROL_STATUS2 DWC3_TRB_CTRL_TRBCTL(3)
+#define DWC3_TRBCTL_CONTROL_STATUS3 DWC3_TRB_CTRL_TRBCTL(4)
+#define DWC3_TRBCTL_CONTROL_DATA    DWC3_TRB_CTRL_TRBCTL(5)
+
+// --- endpoint events ------------------------------------------------------
+// Endpoint event: number[5:1], event[9:6], status[15:12].
+#define DWC3_DEPEVT_XFERCOMPLETE  1u
+#define DWC3_DEPEVT_XFERNOTREADY  3u
+#define DEPEVT_STATUS_CONTROL_DATA   1u
+#define DEPEVT_STATUS_CONTROL_STATUS 2u
+
+// --- device events --------------------------------------------------------
+// Device event: type[11:8], event_info[24:16].
+#define DWC3_DEV_EVENT_DISCONNECT   0u
+#define DWC3_DEV_EVENT_RESET        1u
+#define DWC3_DEV_EVENT_CONNECT_DONE 2u
+#define DWC3_DEV_EVENT_LINK_STATUS  3u
+
+// --- DCFG -----------------------------------------------------------------
+#define DWC3_DCFG_DEVADDR(n)      (((n) & 0x7Fu) << 3)
+#define DWC3_DCFG_DEVADDR_MASK    (0x7Fu << 3)
+
 #endif // NABU_DWC3_REGS_H
